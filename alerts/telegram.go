@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +22,9 @@ type TelegramAlerter struct {
 }
 
 func NewTelegramAlerter(botToken, chatID string, cooldown time.Duration) *TelegramAlerter {
+	// Normalize: strip leading "bot" prefix if present (URL already includes it)
+	botToken = strings.TrimPrefix(botToken, "bot")
+
 	enabled := botToken != "" && chatID != ""
 	if !enabled {
 		logger.Info().Msg("Telegram alerts disabled (no bot token or chat ID)")
