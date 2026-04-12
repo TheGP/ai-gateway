@@ -287,7 +287,7 @@ ab.innerHTML=rows.join('');
 const rb=document.querySelector('#requests tbody');
 const reqs=(d.recent_requests||[]).slice(0,30);
 rb.innerHTML=reqs.map(r=>{
-  const t=new Date(r.time).toLocaleTimeString();
+  const t=new Date(r.time).toLocaleTimeString([], {hour12: false});
   const badge=r.status==='ok'?(r.fallback?'fallback':'ok'):'error';
   return '<tr><td class="mono">'+t+'</td><td>'+r.requested_model+'</td>'+
     '<td>'+r.actual_model+'</td><td>'+((r.provider||'')+'/'+( r.account||''))+'</td>'+
@@ -298,7 +298,7 @@ rb.innerHTML=reqs.map(r=>{
 const ad=document.getElementById('alerts');
 const alerts=(d.alerts||[]).slice(-20).reverse();
 ad.innerHTML=alerts.length?alerts.map(a=>{
-  const t=new Date(a.time).toLocaleTimeString();
+  const t=new Date(a.time).toLocaleTimeString([], {hour12: false});
   const emoji=a.level==='error'?'🔴':'🟡';
   return '<div style="padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:.85rem"><span class="mono">'+t+'</span> '+emoji+' '+a.message+'</div>'
 }).join(''):'<div style="color:#888;padding:12px">No alerts</div>';

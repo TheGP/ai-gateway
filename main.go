@@ -10,6 +10,7 @@ import (
 	"ai-gateway/router"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -286,7 +287,12 @@ func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Ro
 
 	resp, err := r.Route(ctx, chatReq)
 	if err != nil {
-		// Send Telegram alert for exhaustion
+		// Client disconnected — don't alert Telegram, just close quietly.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+
+		// Send Telegram alert for genuine exhaustion
 		telegram.AlertExhausted(chatReq.Model, err.Error())
 
 		status := http.StatusServiceUnavailable

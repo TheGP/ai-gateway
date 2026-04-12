@@ -13,6 +13,9 @@ import (
 	"time"
 )
 
+// modelUnavailableCooldown is how long a provider is skipped after returning 503.
+const modelUnavailableCooldown = 2 * time.Minute
+
 // Router handles intelligent request routing across accounts
 type Router struct {
 	accounts       []*provider.Account
@@ -20,6 +23,10 @@ type Router struct {
 	telegram       *alerts.TelegramAlerter
 	requestTimeout time.Duration
 	retryDelay     time.Duration
+
+	// Per-provider model unavailability cooldowns (key: "provider:model")
+	// Protected by mu.
+	modelUnavailableUntil map[string]time.Time
 
 	// Stats
 	recentRequests []RequestLog
@@ -32,16 +39,16 @@ type Router struct {
 }
 
 type RequestLog struct {
-	Time          time.Time `json:"time"`
-	RequestedModel string  `json:"requested_model"`
-	ActualModel   string   `json:"actual_model"`
-	Provider      string   `json:"provider"`
-	Account       string   `json:"account"`
-	Fallback      bool     `json:"fallback"`
-	DurationMs    int64    `json:"duration_ms"`
-	Tokens        int      `json:"tokens"`
-	Status        string   `json:"status"`
-	Error         string   `json:"error,omitempty"`
+	Time           time.Time `json:"time"`
+	RequestedModel string    `json:"requested_model"`
+	ActualModel    string    `json:"actual_model"`
+	Provider       string    `json:"provider"`
+	Account        string    `json:"account"`
+	Fallback       bool      `json:"fallback"`
+	DurationMs     int64     `json:"duration_ms"`
+	Tokens         int       `json:"tokens"`
+	Status         string    `json:"status"`
+	Error          string    `json:"error,omitempty"`
 }
 
 type AlertLog struct {
@@ -52,12 +59,13 @@ type AlertLog struct {
 
 func New(accounts []*provider.Account, cfg *config.Config, telegram *alerts.TelegramAlerter) *Router {
 	return &Router{
-		accounts:       accounts,
-		cfg:            cfg,
-		telegram:       telegram,
-		requestTimeout: cfg.Gateway.RequestTimeout,
-		retryDelay:     cfg.Gateway.RetryDelay,
-		startTime:      time.Now(),
+		accounts:              accounts,
+		cfg:                   cfg,
+		telegram:              telegram,
+		requestTimeout:        cfg.Gateway.RequestTimeout,
+		retryDelay:            cfg.Gateway.RetryDelay,
+		startTime:             time.Now(),
+		modelUnavailableUntil: make(map[string]time.Time),
 	}
 }
 
@@ -86,16 +94,27 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 		_, modelCfg := r.cfg.FindModelProvider(req.Model)
 		if modelCfg != nil {
 			fallbackModels := r.getModelsAtOrAboveTier(modelCfg.Tier, req.Model)
+			logger.Debug().Str("model", req.Model).Strs("candidates", fallbackModels).Msg("Tier fallback: trying candidates")
 			for _, fallbackModel := range fallbackModels {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
 				fallbackReq := req
 				fallbackReq.Model = fallbackModel
+				logger.Debug().Str("original", req.Model).Str("trying", fallbackModel).Msg("Tier fallback attempt")
 				resp, account, err = r.tryModel(ctx, fallbackReq, estimatedTokens)
 				if err == nil {
-					logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Msg("Tier fallback succeeded")
+					logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Str("provider", account.ProviderName).Msg("Tier fallback succeeded")
 					r.recordSuccess(start, originalModel, fallbackModel, account, resp, true)
 					return r.attachGatewayMeta(resp, originalModel, fallbackModel, account, true), nil
 				}
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil, err
+				}
+				logger.Warn().Err(err).Str("original", req.Model).Str("fallback", fallbackModel).Msg("Tier fallback attempt failed")
 			}
+		} else {
+			logger.Warn().Str("model", req.Model).Msg("Tier fallback skipped: model not found in config")
 		}
 	}
 
@@ -104,7 +123,7 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 	select {
 	case <-time.After(r.retryDelay):
 	case <-ctx.Done():
-		r.recordFailure(start, originalModel, req.Model, "timeout")
+		// Client disconnected — don't record as a gateway failure
 		return nil, ctx.Err()
 	}
 
@@ -112,6 +131,11 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 	if err == nil {
 		r.recordSuccess(start, originalModel, req.Model, account, resp, false)
 		return r.attachGatewayMeta(resp, originalModel, req.Model, account, false), nil
+	}
+
+	// Client gave up during retry
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, err
 	}
 
 	// 6. All failed
@@ -142,22 +166,24 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		return candidates[i].LastUsed.Before(candidates[j].LastUsed)
 	})
 
-	// unavailableProviders tracks which providers returned 503 for this model.
-	// A 503 is infrastructure-level for that provider only — other providers
-	// serving the same model (e.g. Bedrock vs Anthropic direct) are independent.
-	unavailableProviders := make(map[string]bool)
-
 	var lastErr error
 	for _, account := range candidates {
+		// If the client has already disconnected, stop immediately — no point
+		// trying more accounts and no need to log spurious "Request failed" lines.
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
+
 		// Skip accounts that have been permanently disabled (e.g. expired key)
 		if account.Disabled {
 			logger.Debug().Str("account", account.DisplayName()).Msg("Skipping disabled account")
 			continue
 		}
 
-		// Skip accounts from providers that already returned 503 for this model
-		if unavailableProviders[account.ProviderName] {
-			logger.Debug().Str("account", account.DisplayName()).Str("provider", account.ProviderName).Msg("Skipping: provider already returned 503 for this model")
+		// Skip accounts whose provider is in a 503 cooldown for this model
+		if until, ok := r.getModelUnavailable(account.ProviderName, req.Model); ok {
+			logger.Debug().Str("provider", account.ProviderName).Str("model", req.Model).
+				Dur("remaining", time.Until(until)).Msg("Skipping: provider in 503 cooldown for this model")
 			continue
 		}
 
@@ -185,13 +211,19 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			return resp, account, nil
 		}
 
-		// Handle model-level unavailability (503) — skip all remaining accounts
-		// from this provider but continue to other providers serving the same model.
-		// e.g. Anthropic 503 does not mean Bedrock is also overloaded.
+		// Client disconnected mid-flight — abort silently, don't count as an error.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, nil, err
+		}
+
+		// Handle model-level unavailability (503).
+		// Record a cross-request cooldown for this provider+model so subsequent
+		// requests don't hammer it again immediately. Other providers are unaffected.
 		var modelUnavailErr *provider.ModelUnavailableError
 		if errors.As(err, &modelUnavailErr) {
-			unavailableProviders[account.ProviderName] = true
-			logger.Warn().Str("model", req.Model).Str("provider", account.ProviderName).Msg("Model unavailable (503) — skipping remaining accounts for this provider")
+			r.setModelUnavailable(account.ProviderName, req.Model)
+			logger.Warn().Str("model", req.Model).Str("provider", account.ProviderName).
+				Dur("cooldown", modelUnavailableCooldown).Msg("Model unavailable (503) — provider cooling down")
 			lastErr = err
 			continue
 		}
@@ -202,7 +234,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			account.Disabled = true
 			logger.Error().Str("account", account.DisplayName()).Msg("API key invalid/expired — account disabled until restart")
 			r.addAlert("error", fmt.Sprintf("Dead API key: %s — disabled until restart", account.DisplayName()))
-			r.telegram.AlertInvalidKey(account.DisplayName())
+			r.telegram.AlertInvalidKey(account.DisplayName())  
 			lastErr = err
 			continue
 		}
@@ -228,6 +260,26 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		lastErr = fmt.Errorf("no available accounts for model %q", req.Model)
 	}
 	return nil, nil, lastErr
+}
+
+// setModelUnavailable records a 503 cooldown for a provider+model pair.
+func (r *Router) setModelUnavailable(providerName, modelID string) {
+	key := providerName + ":" + modelID
+	r.mu.Lock()
+	r.modelUnavailableUntil[key] = time.Now().Add(modelUnavailableCooldown)
+	r.mu.Unlock()
+}
+
+// getModelUnavailable returns (until, true) if the provider is still in cooldown for this model.
+func (r *Router) getModelUnavailable(providerName, modelID string) (time.Time, bool) {
+	key := providerName + ":" + modelID
+	r.mu.Lock()
+	until, ok := r.modelUnavailableUntil[key]
+	r.mu.Unlock()
+	if !ok || time.Now().After(until) {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func (r *Router) sendToAccount(ctx context.Context, account *provider.Account, req provider.ChatRequest) (*provider.ChatResponse, error) {
@@ -377,13 +429,13 @@ type Stats struct {
 }
 
 type AccountStat struct {
-	Provider  string               `json:"provider"`
-	Account   string               `json:"account"`
-	Models    []string             `json:"models"`
-	LimitMode string               `json:"limit_mode"`
-	Status    string               `json:"status"`
-	Usage     provider.UsageStats  `json:"usage"`
-	Limits    config.ModelLimits   `json:"limits"`
+	Provider  string              `json:"provider"`
+	Account   string              `json:"account"`
+	Models    []string            `json:"models"`
+	LimitMode string              `json:"limit_mode"`
+	Status    string              `json:"status"`
+	Usage     provider.UsageStats `json:"usage"`
+	Limits    config.ModelLimits  `json:"limits"`
 }
 
 func (r *Router) GetStats() Stats {
