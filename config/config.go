@@ -72,12 +72,12 @@ type ModelConfig struct {
 }
 
 type ModelLimits struct {
-	RPM            int   `yaml:"rpm"`
-	RPD            int   `yaml:"rpd"`
-	RPS            int   `yaml:"rps"`
-	TPM            int   `yaml:"tpm"`
-	TPD            int   `yaml:"tpd"`
-	TokensPerMonth int64 `yaml:"tokens_per_month"`
+	RPM            int   `yaml:"rpm" json:"rpm"`
+	RPD            int   `yaml:"rpd" json:"rpd"`
+	RPS            int   `yaml:"rps" json:"rps"`
+	TPM            int   `yaml:"tpm" json:"tpm"`
+	TPD            int   `yaml:"tpd" json:"tpd"`
+	TokensPerMonth int64 `yaml:"tokens_per_month" json:"tokens_per_month"`
 }
 
 type AccountConfig struct {
