@@ -82,6 +82,14 @@ func main() {
 	accounts := buildAccounts(cfg, proxyProvider)
 	logger.Info().Int("accounts", len(accounts)).Msg("Accounts initialized")
 
+	// --sync: compare live provider model lists against providers.yaml, then exit
+	for _, arg := range os.Args[1:] {
+		if arg == "--sync" {
+			runSync(cfg, accounts)
+			os.Exit(0)
+		}
+	}
+
 	// Initialize router
 	r := router.New(accounts, cfg)
 

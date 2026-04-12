@@ -117,7 +117,28 @@ Accounts with empty/missing keys are silently skipped. Providers with zero valid
 go run .
 ```
 
-### 3. Configuration
+### 3. Sync providers (optional)
+
+Check which models each provider has added or removed since you last updated `providers.yaml`:
+
+```bash
+go run . --sync
+```
+
+Fetches the live model list from each provider's API (using the same proxies as the gateway) and shows:
+
+- **Red ✗** — model is in `providers.yaml` but no longer returned by the provider (safe to remove)
+- **Green ✚** — model is available from the provider but not yet in `providers.yaml` (review & add if useful)
+
+For OpenRouter, only **free models** (zero cost) are shown. To enable the OpenRouter check, add your key to `.env`:
+
+```env
+OPENROUTER_API_KEY=sk-or-...
+```
+
+No files are modified — output is informational only. Update `providers.yaml` manually based on what you want to keep.
+
+### 4. Configuration
 
 All provider config lives in `providers.yaml`. Structure:
 
@@ -172,11 +193,13 @@ Accounts with `proxy: true` get routed through a dedicated Webshare SOCKS5 proxy
 
 | Provider | Models | RPM | RPD | Notes |
 |---|---|---|---|---|
-| Google | gemini-2.5-flash, flash-lite, gemma-3-27b | 10-15 | 500-1500 | Proxy recommended (IP-based limits) |
-| Groq | llama-3.3-70b, llama-3.1-8b, llama-4-scout, mixtral-8x7b | 30 | 1000-14400 | Token limits vary |
-| Mistral | mistral-large, mistral-small, codestral | 60 | — | 1B tokens/month, 1 RPS |
-| Cerebras | llama-3.3-70b, llama-3.1-8b, gpt-oss-120b | 30 | — | 1M TPD |
-| NVIDIA | meta/llama-3.3-70b, meta/llama-3.1-8b, nemotron-70b | 40 | — | Free dev tier, no proxy needed |
+| [Google](https://ai.google.dev/pricing) | gemini-2.5-flash, flash-lite, gemma-3-27b | 10-15 | 500-1500 | Proxy recommended (IP-based limits) |
+| [Groq](https://console.groq.com/docs/rate-limits) | llama-3.3-70b, llama-3.1-8b, llama-4-scout, mixtral-8x7b | 30 | 1000-14400 | Token limits vary |
+| [Mistral](https://docs.mistral.ai/getting-started/models/) | mistral-large, mistral-small, codestral | 60 | — | 1B tokens/month, 1 RPS |
+| [Cerebras](https://inference-docs.cerebras.ai/api-reference/rate-limits) | llama-3.3-70b, llama-3.1-8b, gpt-oss-120b | 30 | — | 1M TPD |
+| [NVIDIA](https://build.nvidia.com/explore/discover) | meta/llama-3.3-70b, meta/llama-3.1-8b, nemotron-70b | 40 | — | Free dev tier, no proxy needed |
+| [OpenRouter](https://openrouter.ai/docs#rate-limits) | *Various free models (`:free` alias or 0 cost)* | 20 | 50-1000 | [List of free models](https://openrouter.ai/models?max_price=0) |
+
 
 ---
 
