@@ -113,6 +113,14 @@ type ChatRequest struct {
 	Temperature *float64  `json:"temperature,omitempty"`
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	XProvider   string    `json:"x_provider,omitempty"`
+
+	// XFallbackModels is an explicit ordered list of models to try if the
+	// primary model fails. Tried before (and instead of) automatic tier fallback.
+	XFallbackModels []string `json:"x_fallback_models,omitempty"`
+
+	// XNoFallback disables automatic tier-based fallback entirely.
+	// Only the requested model (and any explicit x_fallback_models) are tried.
+	XNoFallback bool `json:"x_no_fallback,omitempty"`
 }
 
 // ChatResponse is the OpenAI-compatible response format

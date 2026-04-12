@@ -40,6 +40,54 @@ When `x_provider` is set:
 
 Valid provider names: `google`, `groq`, `mistral`, `cerebras`, `nvidia`
 
+### Explicit fallback models
+
+Use `x_fallback_models` to specify an ordered list of models to try if the primary model fails, before (or instead of) automatic tier fallback:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini",
+    "x_fallback_models": ["mistral-small-latest", "llama-3.3-70b-versatile"],
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+### Disable automatic fallback
+
+Set `x_no_fallback: true` to prevent the gateway from automatically trying other tier-equivalent models. Only the requested model (and any explicit `x_fallback_models`) will be attempted:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer YOUR_GATEWAY_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemini",
+    "x_no_fallback": true,
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+```
+
+Combining both gives you full control over the fallback chain with no surprises:
+
+```json
+{
+  "model": "gemini",
+  "x_fallback_models": ["gemma-3-12b-it"],
+  "x_no_fallback": true
+}
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `x_provider` | string | Force a specific provider; disables all fallback |
+| `x_fallback_models` | string[] | Ordered list of models to try if primary fails |
+| `x_no_fallback` | bool | Skip automatic tier fallback (explicit list still applies) |
+
+
+
 ### List models
 
 ```bash

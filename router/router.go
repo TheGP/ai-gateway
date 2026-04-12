@@ -88,33 +88,68 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 		return r.attachGatewayMeta(resp, originalModel, req.Model, account, false), nil
 	}
 
-	// 4. Tier fallback — find models at same or higher tier
-	// Skip tier fallback when provider is forced (user wants that specific provider)
+	// 4. Fallback logic
+	// Skip all fallback when provider is forced (user wants that specific provider)
 	if req.XProvider == "" {
-		_, modelCfg := r.cfg.FindModelProvider(req.Model)
-		if modelCfg != nil {
-			fallbackModels := r.getModelsAtOrAboveTier(modelCfg.Tier, req.Model)
-			logger.Debug().Str("model", req.Model).Strs("candidates", fallbackModels).Msg("Tier fallback: trying candidates")
-			for _, fallbackModel := range fallbackModels {
-				if ctx.Err() != nil {
-					return nil, ctx.Err()
-				}
-				fallbackReq := req
-				fallbackReq.Model = fallbackModel
-				logger.Debug().Str("original", req.Model).Str("trying", fallbackModel).Msg("Tier fallback attempt")
-				resp, account, err = r.tryModel(ctx, fallbackReq, estimatedTokens)
-				if err == nil {
-					logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Str("provider", account.ProviderName).Msg("Tier fallback succeeded")
-					r.recordSuccess(start, originalModel, fallbackModel, account, resp, true)
-					return r.attachGatewayMeta(resp, originalModel, fallbackModel, account, true), nil
-				}
-				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return nil, err
-				}
-				logger.Warn().Err(err).Str("original", req.Model).Str("fallback", fallbackModel).Msg("Tier fallback attempt failed")
+		// Helper to attempt one fallback model and return true on success.
+		tryFallback := func(fallbackModel string) (bool, error) {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
 			}
-		} else {
-			logger.Warn().Str("model", req.Model).Msg("Tier fallback skipped: model not found in config")
+			fallbackReq := req
+			fallbackReq.Model = fallbackModel
+			logger.Debug().Str("original", req.Model).Str("trying", fallbackModel).Msg("Fallback attempt")
+			resp, account, err = r.tryModel(ctx, fallbackReq, estimatedTokens)
+			if err == nil {
+				logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Str("provider", account.ProviderName).Msg("Tier fallback succeeded")
+				r.recordSuccess(start, originalModel, fallbackModel, account, resp, true)
+				return true, nil
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return false, err
+			}
+			logger.Warn().Err(err).Str("original", req.Model).Str("fallback", fallbackModel).Msg("Fallback attempt failed")
+			return false, nil
+		}
+
+		// 4a. Explicit fallback list (x_fallback_models) — tried first, in order.
+		for _, fallbackModel := range req.XFallbackModels {
+			ok, ctxErr := tryFallback(fallbackModel)
+			if ctxErr != nil {
+				return nil, ctxErr
+			}
+			if ok {
+				return r.attachGatewayMeta(resp, originalModel, resp.Model, account, true), nil
+			}
+		}
+
+		// 4b. Automatic tier fallback — only when x_no_fallback is not set.
+		if !req.XNoFallback {
+			_, modelCfg := r.cfg.FindModelProvider(req.Model)
+			if modelCfg != nil {
+				// Build tier candidates, excluding models already tried explicitly.
+				explicit := make(map[string]bool, len(req.XFallbackModels)+1)
+				explicit[req.Model] = true
+				for _, m := range req.XFallbackModels {
+					explicit[m] = true
+				}
+				tierCandidates := r.getModelsAtOrAboveTier(modelCfg.Tier, req.Model)
+				logger.Debug().Str("model", req.Model).Strs("candidates", tierCandidates).Msg("Tier fallback: trying candidates")
+				for _, fallbackModel := range tierCandidates {
+					if explicit[fallbackModel] {
+						continue // already tried
+					}
+					ok, ctxErr := tryFallback(fallbackModel)
+					if ctxErr != nil {
+						return nil, ctxErr
+					}
+					if ok {
+						return r.attachGatewayMeta(resp, originalModel, resp.Model, account, true), nil
+					}
+				}
+			} else {
+				logger.Warn().Str("model", req.Model).Msg("Tier fallback skipped: model not found in config")
+			}
 		}
 	}
 
