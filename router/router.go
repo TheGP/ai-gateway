@@ -35,7 +35,7 @@ type RequestLog struct {
 	ActualModel   string   `json:"actual_model"`
 	Provider      string   `json:"provider"`
 	Account       string   `json:"account"`
-	Upgraded      bool     `json:"upgraded"`
+	Fallback      bool     `json:"fallback"`
 	DurationMs    int64    `json:"duration_ms"`
 	Tokens        int      `json:"tokens"`
 	Status        string   `json:"status"`
@@ -88,7 +88,7 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 				fallbackReq.Model = fallbackModel
 				resp, account, err = r.tryModel(ctx, fallbackReq, estimatedTokens)
 				if err == nil {
-					logger.Info().Str("original", req.Model).Str("upgraded", fallbackModel).Msg("Tier fallback succeeded")
+					logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Msg("Tier fallback succeeded")
 					r.recordSuccess(start, originalModel, fallbackModel, account, resp, true)
 					return r.attachGatewayMeta(resp, originalModel, fallbackModel, account, true), nil
 				}
@@ -143,9 +143,9 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 	for _, account := range candidates {
 		limits := account.GetModelLimits(req.Model)
 
-		// Proactive check
-		if !account.Usage.CanAccept(estimatedTokens, limits) {
-			logger.Debug().Str("account", account.DisplayName()).Str("model", req.Model).Msg("Skipping: proactive limit check failed")
+		// Proactive check (per-model and/or per-account depending on limit mode)
+		if !account.Usage.CanAccept(estimatedTokens, limits, account.AccountLimits, req.Model, account.LimitMode) {
+			logger.Debug().Str("account", account.DisplayName()).Str("model", req.Model).Str("limit_mode", account.LimitMode).Msg("Skipping: proactive limit check failed")
 			continue
 		}
 
@@ -154,12 +154,12 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		resp, err := r.sendToAccount(ctx, account, req)
 		if err == nil {
 			// Update counters with actual tokens
-			account.Usage.RecordRequest(resp.Usage.PromptTokens, resp.Usage.CompletionTokens)
+			account.Usage.RecordRequest(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, req.Model, account.LimitMode)
 
 			// Check capacity and alert
-			capacity := account.Usage.CapacityPercent(limits)
+			capacity := account.Usage.CapacityPercent(limits, req.Model, account.LimitMode)
 			if capacity > 80 {
-				r.addAlert("warning", fmt.Sprintf("Capacity >80%% on %s (%.0f%%)", account.DisplayName(), capacity))
+				r.addAlert("warning", fmt.Sprintf("Capacity >80%% on %s/%s (%.0f%%)", account.DisplayName(), req.Model, capacity))
 			}
 
 			return resp, account, nil
@@ -171,8 +171,8 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			account.Usage.Record429(rateLimitErr.RetryAfter)
 			logger.Warn().Str("account", account.DisplayName()).Str("model", req.Model).Dur("cooldown", rateLimitErr.RetryAfter).Msg("Rate limited (429)")
 
-			if account.Usage.GetStats().Consecutive429s >= 5 {
-				r.addAlert("warning", fmt.Sprintf("Consecutive 429s on %s (%d)", account.DisplayName(), account.Usage.GetStats().Consecutive429s))
+			if account.Usage.GetStats(account.LimitMode, account.Models).Consecutive429s >= 5 {
+				r.addAlert("warning", fmt.Sprintf("Consecutive 429s on %s (%d)", account.DisplayName(), account.Usage.GetStats(account.LimitMode, account.Models).Consecutive429s))
 			}
 		} else {
 			account.Usage.RecordError()
@@ -252,20 +252,20 @@ func (r *Router) getModelsAtOrAboveTier(minTier int, excludeModel string) []stri
 	return result
 }
 
-func (r *Router) attachGatewayMeta(resp *provider.ChatResponse, originalModel, actualModel string, account *provider.Account, upgraded bool) *provider.ChatResponse {
+func (r *Router) attachGatewayMeta(resp *provider.ChatResponse, originalModel, actualModel string, account *provider.Account, isFallback bool) *provider.ChatResponse {
 	resp.XGateway = &provider.GatewayMetadata{
 		Provider: account.ProviderName,
 		Account:  account.APIKeyEnv,
-		Upgraded: upgraded,
+		Fallback: isFallback,
 	}
-	if upgraded || originalModel != actualModel {
+	if isFallback || originalModel != actualModel {
 		resp.XGateway.OriginalModel = originalModel
 	}
 	resp.Model = actualModel
 	return resp
 }
 
-func (r *Router) recordSuccess(start time.Time, originalModel, actualModel string, account *provider.Account, resp *provider.ChatResponse, upgraded bool) {
+func (r *Router) recordSuccess(start time.Time, originalModel, actualModel string, account *provider.Account, resp *provider.ChatResponse, isFallback bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -277,7 +277,7 @@ func (r *Router) recordSuccess(start time.Time, originalModel, actualModel strin
 		ActualModel:    actualModel,
 		Provider:       account.ProviderName,
 		Account:        account.APIKeyEnv,
-		Upgraded:       upgraded,
+		Fallback:       isFallback,
 		DurationMs:     time.Since(start).Milliseconds(),
 		Tokens:         resp.Usage.TotalTokens,
 		Status:         "ok",
@@ -335,12 +335,13 @@ type Stats struct {
 }
 
 type AccountStat struct {
-	Provider        string                `json:"provider"`
-	Account         string                `json:"account"`
-	Models          []string              `json:"models"`
-	Status          string                `json:"status"`
-	Usage           provider.UsageStats   `json:"usage"`
-	Limits          config.ModelLimits    `json:"limits"`
+	Provider  string               `json:"provider"`
+	Account   string               `json:"account"`
+	Models    []string             `json:"models"`
+	LimitMode string               `json:"limit_mode"`
+	Status    string               `json:"status"`
+	Usage     provider.UsageStats  `json:"usage"`
+	Limits    config.ModelLimits   `json:"limits"`
 }
 
 func (r *Router) GetStats() Stats {
@@ -364,24 +365,25 @@ func (r *Router) GetStats() Stats {
 		}
 
 		status := "ok"
-		usage := a.Usage.GetStats()
+		usage := a.Usage.GetStats(a.LimitMode, a.Models)
 		if usage.CooldownSeconds > 0 {
 			status = "cooldown"
 		}
 
-		// Use limits from first model as representative
+		// Use limits from first model as representative for account-level display
 		var limits config.ModelLimits
 		if len(a.Models) > 0 {
 			limits = a.Models[0].Limits
 		}
 
 		accountStats = append(accountStats, AccountStat{
-			Provider: a.ProviderName,
-			Account:  a.APIKeyEnv,
-			Models:   models,
-			Status:   status,
-			Usage:    usage,
-			Limits:   limits,
+			Provider:  a.ProviderName,
+			Account:   a.APIKeyEnv,
+			Models:    models,
+			LimitMode: a.LimitMode,
+			Status:    status,
+			Usage:     usage,
+			Limits:    limits,
 		})
 	}
 

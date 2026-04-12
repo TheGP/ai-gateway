@@ -18,6 +18,8 @@ type Account struct {
 	UseProxy      bool
 	ProxyOverride string
 	DailyReset    string
+	LimitMode     string             // "per_model" | "per_account" | "both"
+	AccountLimits config.ModelLimits // shared limits used in "both" mode
 
 	ProxyInfo *proxy.ProxyInfo
 	Usage     *AccountUsage
@@ -104,5 +106,5 @@ type GatewayMetadata struct {
 	OriginalModel string `json:"original_model,omitempty"`
 	Provider      string `json:"provider"`
 	Account       string `json:"account"`
-	Upgraded      bool   `json:"upgraded,omitempty"`
+	Fallback      bool   `json:"fallback,omitempty"`
 }

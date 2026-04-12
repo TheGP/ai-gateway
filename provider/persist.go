@@ -9,42 +9,52 @@ import (
 	"ai-gateway/logger"
 )
 
-// persistedUsage is the JSON-serializable subset of AccountUsage.
-// Short-lived windows (requestTimes, tokensThisMinute) are excluded —
-// they are meaningless across restarts.
-type persistedUsage struct {
+// persistedModelUsage holds the durable (cross-restart) subset of ModelUsage.
+// Short-lived windows (requestTimes, tokensThisMinute) are excluded.
+type persistedModelUsage struct {
 	DailyRequests  int       `json:"daily_requests"`
 	DailyTokens    int       `json:"daily_tokens"`
 	DailyResetTime time.Time `json:"daily_reset_time"`
 	MonthlyTokens  int64     `json:"monthly_tokens"`
 	MonthResetTime time.Time `json:"month_reset_time"`
-	CooldownUntil  time.Time `json:"cooldown_until"`
-	TotalRequests  int64     `json:"total_requests"`
-	TotalTokens    int64     `json:"total_tokens"`
-	TotalErrors    int64     `json:"total_errors"`
-	Consecutive429s int      `json:"consecutive_429s"`
+}
+
+// persistedUsage is the JSON-serializable subset of AccountUsage.
+type persistedUsage struct {
+	// Account-level shared counters (per_account / both modes)
+	DailyRequests  int       `json:"daily_requests"`
+	DailyTokens    int       `json:"daily_tokens"`
+	DailyResetTime time.Time `json:"daily_reset_time"`
+	MonthlyTokens  int64     `json:"monthly_tokens"`
+	MonthResetTime time.Time `json:"month_reset_time"`
+
+	// Reactive cooldown + lifetime stats (always)
+	CooldownUntil   time.Time `json:"cooldown_until"`
+	TotalRequests   int64     `json:"total_requests"`
+	TotalTokens     int64     `json:"total_tokens"`
+	TotalErrors     int64     `json:"total_errors"`
+	Consecutive429s int       `json:"consecutive_429s"`
+
+	// Per-model state (per_model / both modes)
+	ModelUsage map[string]persistedModelUsage `json:"model_usage,omitempty"`
 }
 
 // GatewayState is the shared top-level JSON envelope written to gateway_state.json.
-// Each package reads and writes only its own field; the rest is preserved as raw JSON.
 type GatewayState struct {
 	Accounts map[string]persistedUsage `json:"accounts"`
-	Router   json.RawMessage           `json:"router,omitempty"` // owned by router package
+	Router   json.RawMessage           `json:"router,omitempty"`
 }
 
-// FileMu is exported so the router package can co-ordinate on the same mutex,
-// preventing concurrent writes to gateway_state.json from the two packages.
+// FileMu is exported so the router package can co-ordinate on the same mutex.
 var FileMu sync.Mutex
 
 func accountKey(a *Account) string { return a.DisplayName() }
 
-// SaveState serialises account usage into the "accounts" section of path,
-// preserving any other sections (e.g. "router") that are already on disk.
+// SaveState serialises account usage into the "accounts" section of path.
 func SaveState(accounts []*Account, path string) error {
 	FileMu.Lock()
 	defer FileMu.Unlock()
 
-	// Read existing state so we don't clobber the router section
 	state := GatewayState{Accounts: make(map[string]persistedUsage, len(accounts))}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &state)
@@ -55,7 +65,7 @@ func SaveState(accounts []*Account, path string) error {
 
 	for _, a := range accounts {
 		a.Usage.mu.Lock()
-		state.Accounts[accountKey(a)] = persistedUsage{
+		p := persistedUsage{
 			DailyRequests:   a.Usage.dailyRequests,
 			DailyTokens:     a.Usage.dailyTokens,
 			DailyResetTime:  a.Usage.dailyResetTime,
@@ -67,7 +77,23 @@ func SaveState(accounts []*Account, path string) error {
 			TotalErrors:     a.Usage.TotalErrors,
 			Consecutive429s: a.Usage.Consecutive429s,
 		}
+		// Persist per-model state
+		if len(a.Usage.modelUsage) > 0 {
+			p.ModelUsage = make(map[string]persistedModelUsage, len(a.Usage.modelUsage))
+			for id, m := range a.Usage.modelUsage {
+				m.mu.Lock()
+				p.ModelUsage[id] = persistedModelUsage{
+					DailyRequests:  m.dailyRequests,
+					DailyTokens:    m.dailyTokens,
+					DailyResetTime: m.dailyResetTime,
+					MonthlyTokens:  m.monthlyTokens,
+					MonthResetTime: m.monthResetTime,
+				}
+				m.mu.Unlock()
+			}
+		}
 		a.Usage.mu.Unlock()
+		state.Accounts[accountKey(a)] = p
 	}
 
 	return writeAtomic(path, state)
@@ -94,6 +120,7 @@ func LoadState(accounts []*Account, path string) error {
 		if !ok {
 			continue
 		}
+
 		a.Usage.mu.Lock()
 		a.Usage.dailyRequests = s.DailyRequests
 		a.Usage.dailyTokens = s.DailyTokens
@@ -106,6 +133,21 @@ func LoadState(accounts []*Account, path string) error {
 		a.Usage.TotalErrors = s.TotalErrors
 		a.Usage.Consecutive429s = s.Consecutive429s
 		a.Usage.mu.Unlock()
+
+		// Restore per-model state
+		for id, pm := range s.ModelUsage {
+			m := newModelUsage()
+			m.dailyRequests = pm.DailyRequests
+			m.dailyTokens = pm.DailyTokens
+			m.dailyResetTime = pm.DailyResetTime
+			m.monthlyTokens = pm.MonthlyTokens
+			m.monthResetTime = pm.MonthResetTime
+
+			a.Usage.mu.Lock()
+			a.Usage.modelUsage[id] = m
+			a.Usage.mu.Unlock()
+		}
+
 		restored++
 	}
 

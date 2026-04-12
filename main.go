@@ -225,6 +225,8 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 				UseProxy:      acc.Proxy,
 				ProxyOverride: acc.ProxyOverride,
 				DailyReset:    p.DailyReset,
+				LimitMode:     p.LimitMode,
+				AccountLimits: p.AccountLimits,
 				Usage:         provider.NewAccountUsage(),
 			}
 

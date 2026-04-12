@@ -161,16 +161,29 @@ h1{font-size:1.5rem;color:#fff;margin-bottom:4px}
 .card .value.err{color:#f87171}
 table{width:100%;border-collapse:collapse;margin-bottom:24px}
 th{text-align:left;font-size:.7rem;color:#888;text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;border-bottom:1px solid #2a2a2a}
-td{padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:.85rem}
-tr:hover{background:#1a1a1a}
+td{padding:8px 12px;border-bottom:1px solid #1a1a1a;font-size:.85rem;vertical-align:top}
+tr.account-row{cursor:pointer}
+tr.account-row:hover{background:#1a1a1a}
+tr.model-row td{padding:4px 12px 4px 32px;background:#141414;border-bottom:1px solid #1a1a1a}
+tr.model-row.hidden{display:none}
+.model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:8px;padding:8px 0}
+.model-card{background:#1e1e1e;border:1px solid #2a2a2a;border-radius:6px;padding:10px 12px}
+.model-card .name{font-size:.75rem;color:#bbb;margin-bottom:6px;word-break:break-all}
+.model-card .metrics{display:flex;gap:8px;flex-wrap:wrap}
+.model-metric{flex:1;min-width:60px}
+.model-metric .label{font-size:.65rem;color:#666;text-transform:uppercase;margin-bottom:2px}
+.model-metric .nums{font-size:.78rem;color:#ddd}
 .status{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
 .status.ok{background:#4ade80}
 .status.cooldown{background:#facc15}
 .status.error{background:#f87171}
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:.75rem;font-weight:500}
 .badge.ok{background:#052e16;color:#4ade80}
-.badge.upgraded{background:#422006;color:#facc15}
+.badge.fallback{background:#422006;color:#facc15}
 .badge.error{background:#2c0b0e;color:#f87171}
+.badge.per_model{background:#0c1a3a;color:#60a5fa;font-size:.65rem}
+.badge.per_account{background:#1a1a1a;color:#888;font-size:.65rem}
+.badge.both{background:#1a0c2e;color:#a78bfa;font-size:.65rem}
 .section{margin-bottom:24px}
 .section h2{font-size:1rem;color:#ccc;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #2a2a2a}
 .bar{height:4px;background:#2a2a2a;border-radius:2px;margin-top:4px;overflow:hidden}
@@ -183,6 +196,8 @@ tr:hover{background:#1a1a1a}
 .logout{color:#888;font-size:.75rem;text-decoration:none;border:1px solid #333;padding:4px 10px;border-radius:4px}
 .logout:hover{color:#f87171;border-color:#f87171}
 .mono{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.8rem}
+.expand-icon{color:#555;font-size:.7rem;margin-left:6px;transition:transform .2s;display:inline-block}
+.expand-icon.open{transform:rotate(90deg)}
 </style>
 </head>
 <body>
@@ -191,10 +206,43 @@ tr:hover{background:#1a1a1a}
 <div><span class="refresh" style="margin-right:12px">Auto-refresh: 3s</span><a href="/dashboard/logout" class="logout">Logout</a></div>
 </div>
 <div class="grid" id="summary"></div>
-<div class="section"><h2>Provider Accounts</h2><table id="accounts"><thead><tr><th>Account</th><th>Models</th><th>Status</th><th>RPM</th><th>RPD</th><th>TPD</th><th>Requests</th><th>Errors</th></tr></thead><tbody></tbody></table></div>
+<div class="section"><h2>Provider Accounts</h2><table id="accounts"><thead><tr><th>Account</th><th>Mode</th><th>Status</th><th>RPM</th><th>RPD</th><th>TPD</th><th>Requests</th><th>Errors</th></tr></thead><tbody></tbody></table></div>
 <div class="section"><h2>Recent Requests</h2><table id="requests"><thead><tr><th>Time</th><th>Requested</th><th>Actual</th><th>Provider</th><th>Duration</th><th>Tokens</th><th>Status</th></tr></thead><tbody></tbody></table></div>
 <div class="section"><h2>Alerts</h2><div id="alerts"></div></div>
 <script>
+const expanded=new Set();
+
+function bar(used,limit){
+  if(!limit)return '<span style="color:#555">—</span>';
+  const pct=Math.round(used/limit*100);
+  const cls=pct<50?'low':pct<80?'mid':'high';
+  return used+'/'+(limit||'∞')+'<div class="bar"><div class="bar-fill '+cls+'" style="width:'+Math.min(pct,100)+'%"></div></div>';
+}
+
+function modelCards(modelStats,models){
+  if(!modelStats)return '';
+  return '<div class="model-grid">'+models.map(id=>{
+    const s=modelStats[id];
+    if(!s)return '';
+    const shortName=id.split('/').pop();
+    return '<div class="model-card">'+
+      '<div class="name" title="'+id+'">'+shortName+'</div>'+
+      '<div class="metrics">'+
+        '<div class="model-metric"><div class="label">RPM</div><div class="nums">'+bar(s.rpm_used,s.rpm_limit)+'</div></div>'+
+        (s.tpm_limit?'<div class="model-metric"><div class="label">TPM</div><div class="nums">'+bar(s.tpm_used,s.tpm_limit)+'</div></div>':'')+
+        (s.rpd_limit?'<div class="model-metric"><div class="label">RPD</div><div class="nums">'+bar(s.rpd_used,s.rpd_limit)+'</div></div>':'')+
+        (s.monthly_limit?'<div class="model-metric"><div class="label">Monthly</div><div class="nums">'+bar(s.monthly_used,s.monthly_limit)+'</div></div>':'')+
+      '</div>'+
+    '</div>';
+  }).join('')+'</div>';
+}
+
+function toggle(key){
+  if(expanded.has(key))expanded.delete(key);
+  else expanded.add(key);
+  refresh();
+}
+
 async function refresh(){
 try{
 const r=await fetch('/api/stats');
@@ -202,40 +250,57 @@ if(r.status===401){location.href='/dashboard/login';return}
 const d=await r.json();
 document.getElementById('uptime').textContent='Uptime: '+d.uptime;
 document.getElementById('summary').innerHTML=
-'<div class="card"><h3>Total</h3><div class="value">'+d.total_requests+'</div></div>'+
-'<div class="card"><h3>Success</h3><div class="value ok">'+d.successful+'</div></div>'+
-'<div class="card"><h3>Failed</h3><div class="value'+(d.failed>0?' err':'')+'">'+d.failed+'</div></div>'+
-'<div class="card"><h3>Accounts</h3><div class="value">'+d.accounts.length+'</div></div>';
+  '<div class="card"><h3>Total</h3><div class="value">'+d.total_requests+'</div></div>'+
+  '<div class="card"><h3>Success</h3><div class="value ok">'+d.successful+'</div></div>'+
+  '<div class="card"><h3>Failed</h3><div class="value'+(d.failed>0?' err':'')+'">'+d.failed+'</div></div>'+
+  '<div class="card"><h3>Accounts</h3><div class="value">'+d.accounts.length+'</div></div>';
+
 const ab=document.querySelector('#accounts tbody');
-ab.innerHTML=d.accounts.map(a=>{
-const rpmPct=a.limits.rpm?Math.round(a.usage.rpm_used/a.limits.rpm*100):0;
-const rpdPct=a.limits.rpd?Math.round(a.usage.rpd_used/a.limits.rpd*100):0;
-const tpdPct=a.limits.tpd?Math.round(a.usage.tpd_used/a.limits.tpd*100):0;
-const barClass=p=>p<50?'low':p<80?'mid':'high';
-return '<tr><td><span class="status '+a.status+'"></span>'+a.provider+'/'+a.account+'</td>'+
-'<td class="mono">'+a.models.join(', ')+'</td>'+
-'<td><span class="badge '+a.status+'">'+a.status+'</span>'+(a.usage.cooldown_remaining_s>0?' ('+a.usage.cooldown_remaining_s+'s)':'')+'</td>'+
-'<td>'+a.usage.rpm_used+'/'+(a.limits.rpm||'∞')+'<div class="bar"><div class="bar-fill '+barClass(rpmPct)+'" style="width:'+rpmPct+'%"></div></div></td>'+
-'<td>'+a.usage.rpd_used+'/'+(a.limits.rpd||'∞')+'<div class="bar"><div class="bar-fill '+barClass(rpdPct)+'" style="width:'+rpdPct+'%"></div></div></td>'+
-'<td>'+a.usage.tpd_used+'/'+(a.limits.tpd||'∞')+'<div class="bar"><div class="bar-fill '+barClass(tpdPct)+'" style="width:'+tpdPct+'%"></div></div></td>'+
-'<td>'+a.usage.total_requests+'</td><td>'+a.usage.total_errors+'</td></tr>'
-}).join('');
+const rows=[];
+d.accounts.forEach(a=>{
+  const key=a.provider+'/'+a.account;
+  const hasModels=(a.limit_mode==='per_model'||a.limit_mode==='both')&&a.usage.model_stats&&Object.keys(a.usage.model_stats).length>0;
+  const isOpen=expanded.has(key);
+  const rpmPct=a.limits.rpm?Math.round(a.usage.rpm_used/a.limits.rpm*100):0;
+  const rpdPct=a.limits.rpd?Math.round(a.usage.rpd_used/a.limits.rpd*100):0;
+  const tpdPct=a.limits.tpd?Math.round(a.usage.tpd_used/a.limits.tpd*100):0;
+
+  rows.push('<tr class="account-row"'+(hasModels?' onclick="toggle(\''+key+'\')"':'')+'>'+
+    '<td><span class="status '+a.status+'"></span>'+key+(hasModels?'<span class="expand-icon'+(isOpen?' open':'')+'">▶</span>':'')+'</td>'+
+    '<td><span class="badge '+a.limit_mode+'">'+a.limit_mode+'</span></td>'+
+    '<td><span class="badge '+a.status+'">'+a.status+'</span>'+(a.usage.cooldown_remaining_s>0?' ('+a.usage.cooldown_remaining_s+'s)':'')+'</td>'+
+    '<td>'+bar(a.usage.rpm_used,a.limits.rpm)+'</td>'+
+    '<td>'+bar(a.usage.rpd_used,a.limits.rpd)+'</td>'+
+    '<td>'+bar(a.usage.tpd_used,a.limits.tpd)+'</td>'+
+    '<td>'+a.usage.total_requests+'</td>'+
+    '<td>'+a.usage.total_errors+'</td>'+
+  '</tr>');
+
+  if(hasModels){
+    rows.push('<tr class="model-row'+(isOpen?'':' hidden')+'"><td colspan="8">'+
+      modelCards(a.usage.model_stats,a.models)+
+    '</td></tr>');
+  }
+});
+ab.innerHTML=rows.join('');
+
 const rb=document.querySelector('#requests tbody');
 const reqs=(d.recent_requests||[]).slice(0,30);
 rb.innerHTML=reqs.map(r=>{
-const t=new Date(r.time).toLocaleTimeString();
-const badge=r.status==='ok'?(r.upgraded?'upgraded':'ok'):'error';
-return '<tr><td class="mono">'+t+'</td><td>'+r.requested_model+'</td>'+
-'<td>'+r.actual_model+'</td><td>'+((r.provider||'')+'/'+( r.account||''))+'</td>'+
-'<td>'+r.duration_ms+'ms</td><td>'+r.tokens+'</td>'+
-'<td><span class="badge '+badge+'">'+(r.upgraded?'↑ upgraded':r.status)+'</span>'+(r.error?' '+r.error:'')+'</td></tr>'
+  const t=new Date(r.time).toLocaleTimeString();
+  const badge=r.status==='ok'?(r.fallback?'fallback':'ok'):'error';
+  return '<tr><td class="mono">'+t+'</td><td>'+r.requested_model+'</td>'+
+    '<td>'+r.actual_model+'</td><td>'+((r.provider||'')+'/'+( r.account||''))+'</td>'+
+    '<td>'+r.duration_ms+'ms</td><td>'+r.tokens+'</td>'+
+    '<td><span class="badge '+badge+'">'+(r.fallback?'↳ fallback':r.status)+'</span>'+(r.error?' '+r.error:'')+'</td></tr>';
 }).join('');
+
 const ad=document.getElementById('alerts');
 const alerts=(d.alerts||[]).slice(-20).reverse();
 ad.innerHTML=alerts.length?alerts.map(a=>{
-const t=new Date(a.time).toLocaleTimeString();
-const emoji=a.level==='error'?'🔴':'🟡';
-return '<div style="padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:.85rem"><span class="mono">'+t+'</span> '+emoji+' '+a.message+'</div>'
+  const t=new Date(a.time).toLocaleTimeString();
+  const emoji=a.level==='error'?'🔴':'🟡';
+  return '<div style="padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:.85rem"><span class="mono">'+t+'</span> '+emoji+' '+a.message+'</div>'
 }).join(''):'<div style="color:#888;padding:12px">No alerts</div>';
 }catch(e){console.error(e)}
 }

@@ -56,12 +56,14 @@ type TelegramConfig struct {
 }
 
 type ProviderConfig struct {
-	Name       string          `yaml:"name"`
-	Type       string          `yaml:"type"` // "gemini" or "openai"
-	BaseURL    string          `yaml:"base_url"`
-	DailyReset string          `yaml:"daily_reset"`
-	Models     []ModelConfig   `yaml:"models"`
-	Accounts   []AccountConfig `yaml:"accounts"`
+	Name          string          `yaml:"name"`
+	Type          string          `yaml:"type"` // "gemini" or "openai"
+	BaseURL       string          `yaml:"base_url"`
+	DailyReset    string          `yaml:"daily_reset"`
+	LimitMode     string          `yaml:"limit_mode"`     // "per_model" (default) | "per_account" | "both"
+	AccountLimits ModelLimits     `yaml:"account_limits"` // shared limits across all models (used in "both" mode)
+	Models        []ModelConfig   `yaml:"models"`
+	Accounts      []AccountConfig `yaml:"accounts"`
 }
 
 type ModelConfig struct {
@@ -106,10 +108,17 @@ func Load(path string) (*Config, error) {
 		cfg.Gateway.Port = 8080
 	}
 	if cfg.Gateway.RequestTimeout == 0 {
-		cfg.Gateway.RequestTimeout = 30 * time.Second
+		cfg.Gateway.RequestTimeout = 90 * time.Second
 	}
 	if cfg.Gateway.RetryDelay == 0 {
 		cfg.Gateway.RetryDelay = 5 * time.Second
+	}
+
+	// Env override for request timeout (e.g. GATEWAY_REQUEST_TIMEOUT=90s)
+	if v := os.Getenv("GATEWAY_REQUEST_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Gateway.RequestTimeout = d
+		}
 	}
 	if cfg.Telegram.AlertCooldown == 0 {
 		cfg.Telegram.AlertCooldown = 5 * time.Minute
@@ -130,8 +139,11 @@ func Load(path string) (*Config, error) {
 	cfg.Telegram.BotToken = os.Getenv(cfg.Telegram.BotTokenEnv)
 	cfg.Telegram.ChatID = os.Getenv(cfg.Telegram.ChatIDEnv)
 
-	// Resolve account API keys, skip accounts with empty keys
+	// Resolve account API keys, skip accounts with empty keys; default LimitMode
 	for i := range cfg.Providers {
+		if cfg.Providers[i].LimitMode == "" {
+			cfg.Providers[i].LimitMode = "per_model"
+		}
 		var validAccounts []AccountConfig
 		for j := range cfg.Providers[i].Accounts {
 			acc := &cfg.Providers[i].Accounts[j]

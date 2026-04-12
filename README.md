@@ -70,8 +70,8 @@ Every response includes `x_gateway` with routing info:
   "x_gateway": {
     "provider": "google",
     "account": "GEMINI_API_KEY_1",
-    "upgraded": false,
-    "original_model": "gemini"
+    "fallback": false,
+    "original_model": "llama-8b"
   }
 }
 ```
