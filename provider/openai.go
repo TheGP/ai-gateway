@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -69,6 +70,11 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 
 	logger.Debug().Str("account", account.DisplayName()).Str("model", req.Model).Dur("duration", duration).Int("status", resp.StatusCode).Msg("OpenAI API response")
 
+	// Sync remaining counters from Groq/OpenAI-compatible rate limit headers.
+	// These are present on every response and let us avoid sending requests
+	// we know will be rejected.
+	syncRateLimitHeaders(account, resp.Header)
+
 	if resp.StatusCode == 429 {
 		return nil, &RateLimitError{
 			StatusCode: 429,
@@ -94,3 +100,39 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 
 	return &chatResp, nil
 }
+
+// syncRateLimitHeaders reads Groq's x-ratelimit-remaining-* headers and
+// records a short cooldown if either remaining counter is at or near zero.
+// Header docs: https://console.groq.com/docs/rate-limits
+//
+//	x-ratelimit-remaining-requests → RPD remaining
+//	x-ratelimit-remaining-tokens   → TPM remaining
+func syncRateLimitHeaders(account *Account, h http.Header) {
+	remainingReqs := parseIntHeader(h, "x-ratelimit-remaining-requests")
+	remainingToks := parseIntHeader(h, "x-ratelimit-remaining-tokens")
+
+	if remainingReqs == 0 {
+		// Daily request budget exhausted — cooldown until midnight UTC
+		now := time.Now().UTC()
+		tomorrow := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+		account.Usage.SetCooldown(time.Until(tomorrow))
+		logger.Warn().Str("account", account.DisplayName()).Msg("Daily request budget exhausted (x-ratelimit-remaining-requests=0)")
+	} else if remainingToks == 0 {
+		// TPM exhausted — short cooldown (reset is typically within the minute)
+		account.Usage.SetCooldown(15 * time.Second)
+		logger.Debug().Str("account", account.DisplayName()).Msg("TPM budget exhausted (x-ratelimit-remaining-tokens=0)")
+	}
+}
+
+func parseIntHeader(h http.Header, key string) int {
+	val := h.Get(key)
+	if val == "" {
+		return -1 // not present
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return -1
+	}
+	return n
+}
+
