@@ -3,6 +3,7 @@ package dashboard
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 // StatsProvider is implemented by the router to provide stats
@@ -16,22 +17,68 @@ type Handler struct {
 	authToken string
 }
 
+const cookieName = "gw_token"
+
 func NewHandler(stats StatsProvider, authToken string) *Handler {
 	return &Handler{stats: stats, authToken: authToken}
 }
 
-// checkAuth verifies the token from query param or Authorization header
+// checkAuth verifies the token from cookie or Authorization header
 func (h *Handler) checkAuth(r *http.Request) bool {
-	// Check query param
-	if token := r.URL.Query().Get("token"); token == h.authToken {
+	// Check cookie
+	if c, err := r.Cookie(cookieName); err == nil && c.Value == h.authToken {
 		return true
 	}
-	// Check Authorization header
+	// Check Authorization header (for API calls)
 	auth := r.Header.Get("Authorization")
 	if len(auth) > 7 && auth[:7] == "Bearer " {
 		return auth[7:] == h.authToken
 	}
 	return false
+}
+
+// ServeLogin handles GET/POST /dashboard/login
+func (h *Handler) ServeLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "POST" {
+		r.ParseForm()
+		token := r.FormValue("token")
+		if token == h.authToken {
+			http.SetCookie(w, &http.Cookie{
+				Name:     cookieName,
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   int(30 * 24 * time.Hour / time.Second), // 30 days
+			})
+			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(loginHTML(true)))
+		return
+	}
+
+	// GET — if already authed, redirect to dashboard
+	if h.checkAuth(r) {
+		http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(loginHTML(false)))
+}
+
+// ServeLogout clears the cookie
+func (h *Handler) ServeLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     cookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+	http.Redirect(w, r, "/dashboard/login", http.StatusSeeOther)
 }
 
 // ServeStats handles GET /api/stats
@@ -47,11 +94,48 @@ func (h *Handler) ServeStats(w http.ResponseWriter, r *http.Request) {
 // ServeDashboard handles GET /dashboard
 func (h *Handler) ServeDashboard(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAuth(r) {
-		http.Error(w, "Unauthorized. Add ?token=YOUR_TOKEN to the URL.", http.StatusUnauthorized)
+		http.Redirect(w, r, "/dashboard/login", http.StatusSeeOther)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(dashboardHTML))
+}
+
+func loginHTML(showError bool) string {
+	errMsg := ""
+	if showError {
+		errMsg = `<div style="color:#f87171;margin-bottom:16px;font-size:.85rem">Invalid token</div>`
+	}
+	return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Gateway — Login</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0f0f0f;color:#e0e0e0;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login{background:#1a1a1a;border:1px solid #2a2a2a;border-radius:12px;padding:32px;width:100%;max-width:360px}
+.login h1{font-size:1.2rem;color:#fff;margin-bottom:4px}
+.login .sub{color:#888;font-size:.8rem;margin-bottom:24px}
+input[type=password]{width:100%;padding:10px 12px;background:#0f0f0f;border:1px solid #333;border-radius:6px;color:#fff;font-size:.9rem;outline:none;margin-bottom:16px}
+input[type=password]:focus{border-color:#4ade80}
+button{width:100%;padding:10px;background:#4ade80;color:#000;border:none;border-radius:6px;font-size:.9rem;font-weight:600;cursor:pointer}
+button:hover{background:#22c55e}
+</style>
+</head>
+<body>
+<div class="login">
+<h1>🚀 AI Gateway</h1>
+<div class="sub">Enter your auth token to access the dashboard</div>
+` + errMsg + `
+<form method="POST" action="/dashboard/login">
+<input type="password" name="token" placeholder="Auth token" autofocus required>
+<button type="submit">Log in</button>
+</form>
+</div>
+</body>
+</html>`
 }
 
 const dashboardHTML = `<!DOCTYPE html>
@@ -91,24 +175,27 @@ tr:hover{background:#1a1a1a}
 .bar-fill.low{background:#4ade80}
 .bar-fill.mid{background:#facc15}
 .bar-fill.high{background:#f87171}
-.refresh{color:#888;font-size:.75rem;float:right}
+.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.refresh{color:#888;font-size:.75rem}
+.logout{color:#888;font-size:.75rem;text-decoration:none;border:1px solid #333;padding:4px 10px;border-radius:4px}
+.logout:hover{color:#f87171;border-color:#f87171}
 .mono{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.8rem}
 </style>
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:center">
+<div class="topbar">
 <div><h1>🚀 AI Gateway Dashboard</h1><div class="subtitle" id="uptime"></div></div>
-<div class="refresh">Auto-refresh: 3s</div>
+<div><span class="refresh" style="margin-right:12px">Auto-refresh: 3s</span><a href="/dashboard/logout" class="logout">Logout</a></div>
 </div>
 <div class="grid" id="summary"></div>
 <div class="section"><h2>Provider Accounts</h2><table id="accounts"><thead><tr><th>Account</th><th>Models</th><th>Status</th><th>RPM</th><th>RPD</th><th>TPD</th><th>Requests</th><th>Errors</th></tr></thead><tbody></tbody></table></div>
 <div class="section"><h2>Recent Requests</h2><table id="requests"><thead><tr><th>Time</th><th>Requested</th><th>Actual</th><th>Provider</th><th>Duration</th><th>Tokens</th><th>Status</th></tr></thead><tbody></tbody></table></div>
 <div class="section"><h2>Alerts</h2><div id="alerts"></div></div>
 <script>
-const token=new URLSearchParams(location.search).get('token')||'';
 async function refresh(){
 try{
-const r=await fetch('/api/stats?token='+token);
+const r=await fetch('/api/stats');
+if(r.status===401){location.href='/dashboard/login';return}
 const d=await r.json();
 document.getElementById('uptime').textContent='Uptime: '+d.uptime;
 document.getElementById('summary').innerHTML=

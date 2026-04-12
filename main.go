@@ -132,6 +132,8 @@ func main() {
 	})
 
 	mux.HandleFunc("/dashboard", dash.ServeDashboard)
+	mux.HandleFunc("/dashboard/login", dash.ServeLogin)
+	mux.HandleFunc("/dashboard/logout", dash.ServeLogout)
 	mux.HandleFunc("/api/stats", dash.ServeStats)
 
 	addr := fmt.Sprintf(":%d", cfg.Gateway.Port)
@@ -148,7 +150,7 @@ func main() {
 
 	go func() {
 		logger.Info().Str("addr", addr).Msg("AI Gateway started")
-		logger.Info().Str("dashboard", fmt.Sprintf("http://localhost:%d/dashboard?token=%s", cfg.Gateway.Port, cfg.Gateway.AuthToken)).Msg("Dashboard URL")
+		logger.Info().Str("dashboard", fmt.Sprintf("http://localhost:%d/dashboard", cfg.Gateway.Port)).Msg("Dashboard URL")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal().Err(err).Msg("Server failed")
 		}

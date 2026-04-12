@@ -78,7 +78,7 @@ Every response includes `x_gateway` with routing info:
 
 ### Dashboard
 
-Live monitoring at `http://localhost:8080/dashboard?token=YOUR_GATEWAY_TOKEN`
+Live monitoring at `http://localhost:8080/dashboard` — prompts for your auth token on first visit, stores it in an HttpOnly cookie (30 days).
 
 ---
 
