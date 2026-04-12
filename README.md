@@ -90,6 +90,7 @@ Copy `.env.example` to `.env` and fill in your API keys:
 
 ```env
 GATEWAY_AUTH_TOKEN=your-secret-token
+GATEWAY_REQUEST_TIMEOUT=60s
 
 # Telegram alerts (optional)
 TELEGRAM_BOT_TOKEN=bot-token
@@ -175,6 +176,19 @@ providers:
 5. **Tier fallback** — if all accounts for the requested model are exhausted, try models at the same tier or higher (disabled when `x_provider` is set)
 6. **Retry** — wait `retry_delay` (default 5s) and retry once
 7. **Exhaustion alert** — if everything fails, send Telegram alert
+
+### Tiers & Fallback Strategy
+
+Models in `providers.yaml` are assigned a numeric `tier` (typically 1 to 3) which represents their relative capability and size. This system protects the quality of your application's outputs.
+
+*   **Tier 1**: Small, fast models (e.g., Llama 3.1 8B, Gemini Lite, Mistral Small).
+*   **Tier 2**: Balanced, mid-sized models (e.g., Mistral Medium, Codestral, Gemma 27B).
+*   **Tier 3**: Highly capable, large models (e.g., Llama 3.3 70B, Mistral Large, Gemini Flash).
+
+**How it works**: If you request a **Tier 3** model, but all of its API accounts hit rate limits, the gateway will automatically try to route the request to another available **Tier 3** model from a different provider. If you request a **Tier 1** model and it's constrained, the gateway can fall back to another **Tier 1**, or upgrade you to a **Tier 2/3** model.
+
+**Crucially, the gateway will never automatically downgrade your request to a lower tier.** If your app requires a Tier 3 model's reasoning capabilities, it won't silently start making mistakes with a Tier 1 model when limits are reached.
+
 
 ### Provider types
 
