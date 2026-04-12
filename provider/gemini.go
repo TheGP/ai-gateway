@@ -111,8 +111,23 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
+	if resp.StatusCode == 503 {
+		// Model-level outage ("high demand") — no point retrying other accounts
+		return nil, &ModelUnavailableError{StatusCode: 503, Body: string(respBody)}
+	}
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("gemini server error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+	if resp.StatusCode == 400 {
+		// Detect permanently-dead API key
+		if isExpiredKeyBody(string(respBody)) {
+			return nil, &InvalidKeyError{
+				StatusCode: 400,
+				Body:       string(respBody),
+				Account:    account.DisplayName(),
+			}
+		}
+		return nil, fmt.Errorf("gemini API error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
 	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("gemini API error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
@@ -173,17 +188,6 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 	}, nil
 }
 
-// RateLimitError is returned on 429 responses
-type RateLimitError struct {
-	StatusCode int
-	Body       string
-	RetryAfter time.Duration
-}
-
-func (e *RateLimitError) Error() string {
-	return fmt.Sprintf("rate limit %d: %s", e.StatusCode, truncate(e.Body, 200))
-}
-
 func parseRetryAfter(header string) time.Duration {
 	if header == "" {
 		return 60 * time.Second
@@ -196,9 +200,9 @@ func parseRetryAfter(header string) time.Duration {
 	return 60 * time.Second
 }
 
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+// isExpiredKeyBody checks the Gemini error body for known "key is dead" messages.
+func isExpiredKeyBody(body string) bool {
+	return strings.Contains(body, "API key expired") ||
+		strings.Contains(body, "API_KEY_INVALID") ||
+		strings.Contains(body, "API key not valid")
 }

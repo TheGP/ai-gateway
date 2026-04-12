@@ -82,8 +82,20 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 			RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After")),
 		}
 	}
+	if resp.StatusCode == 503 {
+		// Model-level outage — skip remaining accounts
+		return nil, &ModelUnavailableError{StatusCode: 503, Body: string(respBody)}
+	}
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("server error %d: %s", resp.StatusCode, truncate(string(respBody), 200))
+	}
+	if resp.StatusCode == 401 || resp.StatusCode == 403 {
+		// Expired / revoked / invalid key
+		return nil, &InvalidKeyError{
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+			Account:    account.DisplayName(),
+		}
 	}
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, truncate(string(respBody), 200))

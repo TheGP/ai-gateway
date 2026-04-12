@@ -97,16 +97,16 @@ func main() {
 		}
 	}
 
+	// Initialize Telegram alerter
+	telegram := alerts.NewTelegramAlerter(cfg.Telegram.BotToken, cfg.Telegram.ChatID, cfg.Telegram.AlertCooldown)
+
 	// Initialize router
-	r := router.New(accounts, cfg)
+	r := router.New(accounts, cfg, telegram)
 
 	// Restore persisted router state (totals + recent requests)
 	if err := r.LoadRouterState(stateFilePath); err != nil {
 		logger.Warn().Err(err).Msg("Failed to load router state — starting fresh")
 	}
-
-	// Initialize Telegram alerter
-	telegram := alerts.NewTelegramAlerter(cfg.Telegram.BotToken, cfg.Telegram.ChatID, cfg.Telegram.AlertCooldown)
 
 	// Initialize dashboard
 	dash := dashboard.NewHandler(&statsAdapter{r: r}, cfg.Gateway.AuthToken)

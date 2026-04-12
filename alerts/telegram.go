@@ -100,3 +100,14 @@ func (t *TelegramAlerter) Alert429Streak(account string, count int) {
 	msg := fmt.Sprintf("🟡 <b>AI Gateway Warning</b>\n\n%s got %d consecutive 429 errors", account, count)
 	t.Alert("429_"+account, msg)
 }
+
+// AlertInvalidKey sends a critical alert when an API key is found to be expired or invalid.
+// It bypasses the standard cooldown so the alert always fires (key won't recover on its own).
+func (t *TelegramAlerter) AlertInvalidKey(account string) {
+	if !t.enabled {
+		return
+	}
+	msg := fmt.Sprintf("🔑 <b>AI Gateway — Dead API Key</b>\n\nAccount <code>%s</code> returned an expired/invalid key error.\nIt has been <b>disabled</b> until the gateway restarts.", account)
+	// Always send — use a unique key so cooldown doesn't suppress it
+	go t.send(msg)
+}

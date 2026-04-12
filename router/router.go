@@ -1,6 +1,7 @@
 package router
 
 import (
+	"ai-gateway/alerts"
 	"ai-gateway/config"
 	"ai-gateway/logger"
 	"ai-gateway/provider"
@@ -16,6 +17,7 @@ import (
 type Router struct {
 	accounts       []*provider.Account
 	cfg            *config.Config
+	telegram       *alerts.TelegramAlerter
 	requestTimeout time.Duration
 	retryDelay     time.Duration
 
@@ -48,10 +50,11 @@ type AlertLog struct {
 	Message string    `json:"message"`
 }
 
-func New(accounts []*provider.Account, cfg *config.Config) *Router {
+func New(accounts []*provider.Account, cfg *config.Config, telegram *alerts.TelegramAlerter) *Router {
 	return &Router{
 		accounts:       accounts,
 		cfg:            cfg,
+		telegram:       telegram,
 		requestTimeout: cfg.Gateway.RequestTimeout,
 		retryDelay:     cfg.Gateway.RetryDelay,
 		startTime:      time.Now(),
@@ -139,8 +142,25 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		return candidates[i].LastUsed.Before(candidates[j].LastUsed)
 	})
 
+	// unavailableProviders tracks which providers returned 503 for this model.
+	// A 503 is infrastructure-level for that provider only — other providers
+	// serving the same model (e.g. Bedrock vs Anthropic direct) are independent.
+	unavailableProviders := make(map[string]bool)
+
 	var lastErr error
 	for _, account := range candidates {
+		// Skip accounts that have been permanently disabled (e.g. expired key)
+		if account.Disabled {
+			logger.Debug().Str("account", account.DisplayName()).Msg("Skipping disabled account")
+			continue
+		}
+
+		// Skip accounts from providers that already returned 503 for this model
+		if unavailableProviders[account.ProviderName] {
+			logger.Debug().Str("account", account.DisplayName()).Str("provider", account.ProviderName).Msg("Skipping: provider already returned 503 for this model")
+			continue
+		}
+
 		limits := account.GetModelLimits(req.Model)
 
 		// Proactive check (per-model and/or per-account depending on limit mode)
@@ -163,6 +183,28 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			}
 
 			return resp, account, nil
+		}
+
+		// Handle model-level unavailability (503) — skip all remaining accounts
+		// from this provider but continue to other providers serving the same model.
+		// e.g. Anthropic 503 does not mean Bedrock is also overloaded.
+		var modelUnavailErr *provider.ModelUnavailableError
+		if errors.As(err, &modelUnavailErr) {
+			unavailableProviders[account.ProviderName] = true
+			logger.Warn().Str("model", req.Model).Str("provider", account.ProviderName).Msg("Model unavailable (503) — skipping remaining accounts for this provider")
+			lastErr = err
+			continue
+		}
+
+		// Handle permanently invalid/expired key — disable and alert
+		var invalidKeyErr *provider.InvalidKeyError
+		if errors.As(err, &invalidKeyErr) {
+			account.Disabled = true
+			logger.Error().Str("account", account.DisplayName()).Msg("API key invalid/expired — account disabled until restart")
+			r.addAlert("error", fmt.Sprintf("Dead API key: %s — disabled until restart", account.DisplayName()))
+			r.telegram.AlertInvalidKey(account.DisplayName())
+			lastErr = err
+			continue
 		}
 
 		// Handle 429
