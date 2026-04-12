@@ -1,0 +1,157 @@
+# providers.yaml — Central configuration for AI Gateway
+# Edit this file to add/remove providers, models, accounts, and limits.
+
+gateway:
+  port: 8080
+  auth_token_env: "GATEWAY_AUTH_TOKEN"
+  request_timeout: 30s
+  retry_delay: 5s
+
+# Proxy configuration
+proxy:
+  type: webshare                         # "webshare", "static", or "none"
+  api_key_env: "WEBSHARE_API_KEY"        # for webshare type
+  ip_mappings_file: "ip_mappings.json"
+  # For static type, uncomment and add your proxies:
+  # proxies:
+  #   - address: "1.2.3.4:1080"
+  #     username: "user1"
+  #     password: "pass1"
+  #     protocol: "socks5"
+
+# Telegram alerts
+telegram:
+  bot_token_env: "TELEGRAM_BOT_TOKEN"
+  chat_id_env: "TELEGRAM_CHAT_ID"
+  alert_cooldown: 5m
+
+# Model aliases — client can use short names
+aliases:
+  llama-70b: llama-3.3-70b-versatile
+  llama-8b: llama-3.1-8b-instant
+  gemini: gemini-2.5-flash
+  gemini-lite: gemini-2.5-flash-lite
+  mistral: mistral-large-latest
+  codestral: codestral-latest
+  nemotron: nvidia/llama-3.1-nemotron-70b-instruct
+
+providers:
+  # ──── Google AI Studio ─────────────────────────────────────────
+  - name: google
+    type: gemini
+    base_url: "https://generativelanguage.googleapis.com/v1beta"
+    daily_reset: "midnight_pacific"
+    models:
+      - id: gemini-2.5-flash
+        tier: 2
+        context_window: 1048576
+        limits: { rpm: 10, rpd: 500, tpm: 250000 }
+      - id: gemini-2.5-flash-lite
+        tier: 1
+        context_window: 1048576
+        limits: { rpm: 15, rpd: 1500, tpm: 250000 }
+      - id: gemma-3-27b-it
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 10, rpd: 500, tpm: 250000 }
+    accounts:
+      - api_key_env: "GEMINI_API_KEY_1"
+        proxy: true
+      - api_key_env: "GEMINI_API_KEY_2"
+        proxy: true
+      - api_key_env: "GEMINI_API_KEY_3"
+        proxy: true
+      - api_key_env: "GEMINI_API_KEY_4"
+        proxy: true
+
+  # ──── Groq ─────────────────────────────────────────────────────
+  - name: groq
+    type: openai
+    base_url: "https://api.groq.com/openai/v1"
+    daily_reset: "midnight_utc"
+    models:
+      - id: llama-3.3-70b-versatile
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }
+      - id: llama-3.1-8b-instant
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }
+      - id: llama-4-scout-17b-16e-instruct
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 500000 }
+      - id: mixtral-8x7b-32768
+        tier: 2
+        context_window: 32768
+        limits: { rpm: 30, rpd: 14400, tpm: 5000, tpd: 500000 }
+    accounts:
+      - api_key_env: "GROQ_API_KEY_1"
+        proxy: false
+
+  # ──── Mistral AI ───────────────────────────────────────────────
+  - name: mistral
+    type: openai
+    base_url: "https://api.mistral.ai/v1"
+    daily_reset: "none"
+    models:
+      - id: mistral-large-latest
+        tier: 3
+        context_window: 128000
+        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
+      - id: mistral-small-latest
+        tier: 2
+        context_window: 128000
+        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
+      - id: codestral-latest
+        tier: 2
+        context_window: 256000
+        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
+    accounts:
+      - api_key_env: "MISTRAL_API_KEY_1"
+        proxy: false
+
+  # ──── Cerebras ─────────────────────────────────────────────────
+  - name: cerebras
+    type: openai
+    base_url: "https://api.cerebras.ai/v1"
+    daily_reset: "token_bucket"
+    models:
+      - id: llama-3.3-70b
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
+      - id: llama-3.1-8b
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
+      - id: gpt-oss-120b
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
+    accounts:
+      - api_key_env: "CEREBRAS_API_KEY_1"
+        proxy: false
+
+  # ──── NVIDIA NIM ────────────────────────────────────────────────
+  - name: nvidia
+    type: openai
+    base_url: "https://integrate.api.nvidia.com/v1"
+    daily_reset: "none"
+    models:
+      - id: meta/llama-3.3-70b-instruct
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: meta/llama-3.1-8b-instruct
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: nvidia/llama-3.1-nemotron-70b-instruct
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 40 }
+    accounts:
+      - api_key_env: "NVIDIA_API_KEY_1"
+        proxy: false
