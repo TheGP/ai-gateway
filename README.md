@@ -194,3 +194,9 @@ telegram:
   chat_id_env: "TELEGRAM_CHAT_ID"
   alert_cooldown: 5m
 ```
+
+---
+
+## Disclaimer
+
+This project is provided for educational and personal development purposes only. It is your responsibility to review and comply with each AI provider's terms of service and acceptable use policies. The authors are not responsible for any misuse, account suspensions, or violations arising from the use of this software. Use at your own risk.
