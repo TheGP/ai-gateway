@@ -22,6 +22,8 @@ import (
 	"github.com/joho/godotenv"
 )
 
+const stateFilePath = "gateway_state.json"
+
 func main() {
 	// Load .env (ignore error if not found)
 	_ = godotenv.Load()
@@ -82,6 +84,11 @@ func main() {
 	accounts := buildAccounts(cfg, proxyProvider)
 	logger.Info().Int("accounts", len(accounts)).Msg("Accounts initialized")
 
+	// Restore persisted usage state (daily/monthly counters, cooldowns, lifetime stats)
+	if err := provider.LoadState(accounts, stateFilePath); err != nil {
+		logger.Warn().Err(err).Msg("Failed to load persisted state — starting fresh")
+	}
+
 	// --sync: compare live provider model lists against providers.yaml, then exit
 	for _, arg := range os.Args[1:] {
 		if arg == "--sync" {
@@ -92,6 +99,11 @@ func main() {
 
 	// Initialize router
 	r := router.New(accounts, cfg)
+
+	// Restore persisted router state (totals + recent requests)
+	if err := r.LoadRouterState(stateFilePath); err != nil {
+		logger.Warn().Err(err).Msg("Failed to load router state — starting fresh")
+	}
 
 	// Initialize Telegram alerter
 	telegram := alerts.NewTelegramAlerter(cfg.Telegram.BotToken, cfg.Telegram.ChatID, cfg.Telegram.AlertCooldown)
@@ -156,6 +168,21 @@ func main() {
 	done := make(chan os.Signal, 1)
 	signal.Notify(done, os.Interrupt, syscall.SIGTERM)
 
+	// Periodic state snapshot every 60 seconds
+	stateTicker := time.NewTicker(60 * time.Second)
+	go func() {
+		for range stateTicker.C {
+			if err := provider.SaveState(accounts, stateFilePath); err != nil {
+				logger.Warn().Err(err).Msg("Periodic account state save failed")
+			}
+			if err := r.SaveRouterState(stateFilePath); err != nil {
+				logger.Warn().Err(err).Msg("Periodic router state save failed")
+			} else {
+				logger.Debug().Msg("Usage state saved to disk")
+			}
+		}
+	}()
+
 	go func() {
 		logger.Info().Str("addr", addr).Msg("AI Gateway started")
 		logger.Info().Str("dashboard", fmt.Sprintf("http://localhost:%d/dashboard", cfg.Gateway.Port)).Msg("Dashboard URL")
@@ -165,7 +192,19 @@ func main() {
 	}()
 
 	<-done
+	stateTicker.Stop()
 	logger.Info().Msg("Shutting down...")
+
+	// Final state snapshot before exit
+	if err := provider.SaveState(accounts, stateFilePath); err != nil {
+		logger.Error().Err(err).Msg("Failed to save account state on shutdown")
+	}
+	if err := r.SaveRouterState(stateFilePath); err != nil {
+		logger.Error().Err(err).Msg("Failed to save router state on shutdown")
+	} else {
+		logger.Info().Str("path", stateFilePath).Msg("Usage state saved")
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	server.Shutdown(ctx)
