@@ -295,6 +295,14 @@ Models in `providers.yaml` are assigned a numeric `tier` (typically 1 to 3) whic
 
 **Crucially, the gateway will never automatically downgrade your request to a lower tier.** If your app requires a Tier 3 model's reasoning capabilities, it won't silently start making mistakes with a Tier 1 model when limits are reached.
 
+> **Tip — paid last-resort models**: Assign a very high tier (e.g., `tier: 99`) to any paid model you only want used when all free alternatives are exhausted. Since fallback sorts by tier ascending, a tier-99 model is always tried last, regardless of what tier the original request was for. Example use case: adding an OpenRouter paid model as an absolute safety net so traffic is never dropped.
+>
+> ```yaml
+> - id: openai/gpt-oss-120b
+>   tier: 99          # only reached after every free model fails
+>   # no limits — paid model, gateway will react to 429s as they come
+> ```
+
 
 ### Provider types
 
