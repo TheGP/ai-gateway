@@ -9,6 +9,7 @@ import (
 	"ai-gateway/proxy"
 	"ai-gateway/router"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,10 +91,27 @@ func main() {
 		logger.Warn().Err(err).Msg("Failed to load persisted state — starting fresh")
 	}
 
-	// --sync: compare live provider model lists against providers.yaml, then exit
-	for _, arg := range os.Args[1:] {
-		if arg == "--sync" {
+	// CLI subcommands — run against the already-running gateway, then exit.
+	// Usage:
+	//   ./ai-gateway accounts
+	//   ./ai-gateway enable  google/GEMINI_API_KEY_1
+	//   ./ai-gateway disable groq/GROQ_API_KEY_1
+	//   ./ai-gateway --sync
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "--sync":
 			runSync(cfg, accounts)
+			os.Exit(0)
+		case "accounts":
+			runAccounts(cfg)
+			os.Exit(0)
+		case "enable", "disable":
+			if len(args) < 2 {
+				fmt.Fprintf(os.Stderr, "Usage: ai-gateway %s <provider/KEY>\n", args[0])
+				os.Exit(1)
+			}
+			runSetDisabled(cfg, args[1], args[0] == "disable")
 			os.Exit(0)
 		}
 	}
@@ -119,7 +137,7 @@ func main() {
 	authMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, req *http.Request) {
 			auth := req.Header.Get("Authorization")
-			if !strings.HasPrefix(auth, "Bearer ") || auth[7:] != cfg.Gateway.AuthToken {
+			if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(cfg.Gateway.AuthToken)) != 1 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				json.NewEncoder(w).Encode(map[string]interface{}{
@@ -156,6 +174,9 @@ func main() {
 	mux.HandleFunc("/dashboard/login", dash.ServeLogin)
 	mux.HandleFunc("/dashboard/logout", dash.ServeLogout)
 	mux.HandleFunc("/api/stats", dash.ServeStats)
+	mux.HandleFunc("/api/accounts/set-disabled", authMiddleware(func(w http.ResponseWriter, req *http.Request) {
+		handleSetAccountDisabled(w, req, r)
+	}))
 
 	addr := fmt.Sprintf(":%d", cfg.Gateway.Port)
 	server := &http.Server{
@@ -173,11 +194,8 @@ func main() {
 	stateTicker := time.NewTicker(60 * time.Second)
 	go func() {
 		for range stateTicker.C {
-			if err := provider.SaveState(accounts, stateFilePath); err != nil {
-				logger.Warn().Err(err).Msg("Periodic account state save failed")
-			}
-			if err := r.SaveRouterState(stateFilePath); err != nil {
-				logger.Warn().Err(err).Msg("Periodic router state save failed")
+			if err := r.SaveFullState(stateFilePath, accounts); err != nil {
+				logger.Warn().Err(err).Msg("Periodic state save failed")
 			} else {
 				logger.Debug().Msg("Usage state saved to disk")
 			}
@@ -197,11 +215,8 @@ func main() {
 	logger.Info().Msg("Shutting down...")
 
 	// Final state snapshot before exit
-	if err := provider.SaveState(accounts, stateFilePath); err != nil {
-		logger.Error().Err(err).Msg("Failed to save account state on shutdown")
-	}
-	if err := r.SaveRouterState(stateFilePath); err != nil {
-		logger.Error().Err(err).Msg("Failed to save router state on shutdown")
+	if err := r.SaveFullState(stateFilePath, accounts); err != nil {
+		logger.Error().Err(err).Msg("Failed to save state on shutdown")
 	} else {
 		logger.Info().Str("path", stateFilePath).Msg("Usage state saved")
 	}
@@ -228,7 +243,7 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 				DailyReset:    p.DailyReset,
 				LimitMode:     p.LimitMode,
 				AccountLimits: p.AccountLimits,
-				Usage:         provider.NewAccountUsage(),
+				Usage:         provider.NewAccountUsage(p.DailyReset),
 			}
 
 			// Set up proxy
@@ -248,6 +263,19 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 				}
 			}
 
+			// Create HTTP client once per account at startup
+			httpClient := &http.Client{Timeout: 60 * time.Second}
+			if account.ProxyInfo != nil {
+				proxiedClient, err := proxy.MakeHTTPClient(account.ProxyInfo, 60)
+				if err != nil {
+					logger.Warn().Err(err).Str("account", account.DisplayName()).Msg("Failed to create proxied client, using direct")
+				} else {
+					httpClient = proxiedClient
+					httpClient.Timeout = 60 * time.Second
+				}
+			}
+			account.HTTPClient = httpClient
+
 			accounts = append(accounts, account)
 		}
 	}
@@ -257,7 +285,7 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 
 func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Router, cfg *config.Config, telegram *alerts.TelegramAlerter) {
 	var chatReq provider.ChatRequest
-	if err := json.NewDecoder(req.Body).Decode(&chatReq); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 10<<20)).Decode(&chatReq); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -338,6 +366,35 @@ func handleListModels(w http.ResponseWriter, req *http.Request, cfg *config.Conf
 		"object": "list",
 		"data":   data,
 	})
+}
+
+func handleSetAccountDisabled(w http.ResponseWriter, req *http.Request, r *router.Router) {
+	if req.Method != "POST" {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Account  string `json:"account"`
+		Disabled bool   `json:"disabled"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 1<<10)).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid request body"})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if !r.SetAccountDisabled(body.Account, body.Disabled) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]string{"error": "account not found"})
+		return
+	}
+	action := "enabled"
+	if body.Disabled {
+		action = "disabled"
+	}
+	logger.Info().Str("account", body.Account).Bool("disabled", body.Disabled).Msg("Account " + action + " via API")
+	json.NewEncoder(w).Encode(map[string]string{"ok": action})
 }
 
 // statsAdapter wraps the router to implement dashboard.StatsProvider

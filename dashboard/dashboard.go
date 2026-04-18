@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -26,13 +27,13 @@ func NewHandler(stats StatsProvider, authToken string) *Handler {
 // checkAuth verifies the token from cookie or Authorization header
 func (h *Handler) checkAuth(r *http.Request) bool {
 	// Check cookie
-	if c, err := r.Cookie(cookieName); err == nil && c.Value == h.authToken {
+	if c, err := r.Cookie(cookieName); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(h.authToken)) == 1 {
 		return true
 	}
 	// Check Authorization header (for API calls)
 	auth := r.Header.Get("Authorization")
 	if len(auth) > 7 && auth[:7] == "Bearer " {
-		return auth[7:] == h.authToken
+		return subtle.ConstantTimeCompare([]byte(auth[7:]), []byte(h.authToken)) == 1
 	}
 	return false
 }
