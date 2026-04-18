@@ -1,0 +1,11 @@
+{
+  "name": "ai-gateway",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "bash deploy.sh",
+    "enable": "go run . enable",
+    "disable": "go run . disable",
+    "accounts": "go run . accounts"
+  }
+}

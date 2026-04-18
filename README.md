@@ -166,7 +166,43 @@ Accounts with empty/missing keys are silently skipped. Providers with zero valid
 go run .
 ```
 
-### 3. Sync providers (optional)
+### 3. CLI management
+
+The gateway binary doubles as a management CLI. The gateway must be running for these commands to work.
+
+```bash
+# List all accounts with status, request counts, and cooldown
+./ai-gateway accounts
+
+# Re-enable a disabled account (e.g. one that was auto-disabled for an expired key)
+./ai-gateway enable google/GEMINI_API_KEY_1
+
+# Manually disable an account
+./ai-gateway disable groq/GROQ_API_KEY_1
+```
+
+Or via npm shortcuts (same thing):
+
+```bash
+npm run accounts
+npm run enable  -- google/GEMINI_API_KEY_1
+npm run disable -- groq/GROQ_API_KEY_1
+```
+
+Example output of `accounts`:
+
+```
+Account                  Status         Requests  Errors  Cooldown
+────────────────────────────────────────────────────────────────────
+google/GEMINI_API_KEY_1  ✅ ok               142       0  —
+google/GEMINI_API_KEY_2  🔴 disabled           5       3  —
+groq/GROQ_API_KEY_1      🟡 cooldown           18       1  240s
+```
+
+> **Note:** Disabled state survives restarts — it's persisted to `gateway_state.json`.
+> Re-enable with `./ai-gateway enable <account>` or set `"disabled": false` in the JSON manually.
+
+### 4. Sync providers (optional)
 
 Check which models each provider has added or removed since you last updated `providers.yaml`:
 
@@ -187,7 +223,29 @@ OPENROUTER_API_KEY=sk-or-...
 
 No files are modified — output is informational only. Update `providers.yaml` manually based on what you want to keep.
 
-### 4. Configuration
+### 5. Deployment (pm2)
+
+A `deploy.sh` script is included for server deployments with [pm2](https://pm2.keymetrics.io/):
+
+```bash
+# First time: install pm2
+npm install -g pm2
+pm2 startup   # follow the printed command to enable auto-start on reboot
+
+# Deploy (pulls git, recompiles if Go files changed, reloads pm2)
+npm run deploy
+# or directly:
+bash deploy.sh
+```
+
+The script:
+1. Pulls `origin master`
+2. Runs `go mod download` only if `go.mod`/`go.sum` changed
+3. Recompiles only if `.go` files changed (skips if binary is up to date)
+4. `pm2 reload` if the process exists, otherwise `pm2 start`
+
+
+### 6. Configuration
 
 All provider config lives in `providers.yaml`. Structure:
 

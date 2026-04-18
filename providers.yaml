@@ -41,19 +41,33 @@ providers:
     type: gemini
     base_url: "https://generativelanguage.googleapis.com/v1beta"
     daily_reset: "midnight_pacific"
+    limit_mode: per_model
     models:
-      - id: gemini-2.5-flash
-        tier: 2
-        context_window: 1048576
-        limits: { rpm: 10, rpd: 500, tpm: 250000 }
-      - id: gemini-2.5-flash-lite
+      # Tier 1
+      - id: gemini-3.1-flash-lite
         tier: 1
         context_window: 1048576
-        limits: { rpm: 15, rpd: 1500, tpm: 250000 }
+        limits: { rpm: 15, rpd: 500, tpm: 250000 }
+      - id: gemma-3-12b-it
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 30, rpd: 14400, tpm: 15000 }
+        
+      # Tier 2
       - id: gemma-3-27b-it
         tier: 2
         context_window: 131072
-        limits: { rpm: 10, rpd: 500, tpm: 250000 }
+        limits: { rpm: 30, rpd: 14400, tpm: 15000 }
+      - id: gemma-4-31b-it
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 15, rpd: 1500 }
+        
+      # Tier 3
+      - id: gemini-3-flash
+        tier: 3
+        context_window: 1048576
+        limits: { rpm: 5, rpd: 20, tpm: 250000 }
     accounts:
       - api_key_env: "GEMINI_API_KEY_1"
         proxy: true
@@ -69,86 +83,137 @@ providers:
     type: openai
     base_url: "https://api.groq.com/openai/v1"
     daily_reset: "midnight_utc"
+    limit_mode: per_account
     models:
-      - id: llama-3.3-70b-versatile
-        tier: 3
-        context_window: 131072
-        limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }
+      # Tier 1 — high RPD, lower quality
       - id: llama-3.1-8b-instant
         tier: 1
         context_window: 131072
         limits: { rpm: 30, rpd: 14400, tpm: 6000, tpd: 500000 }
-      - id: llama-4-scout-17b-16e-instruct
+      - id: openai/gpt-oss-20b
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 30, rpd: 1000, tpm: 8000, tpd: 200000 }
+      - id: qwen/qwen3-32b
+        tier: 2
+        context_window: 32768
+        limits: { rpm: 60, rpd: 1000, tpm: 6000, tpd: 500000 }
+      # Tier 2
+      - id: meta-llama/llama-4-scout-17b-16e-instruct
         tier: 2
         context_window: 131072
         limits: { rpm: 30, rpd: 1000, tpm: 30000, tpd: 500000 }
-      - id: mixtral-8x7b-32768
-        tier: 2
-        context_window: 32768
-        limits: { rpm: 30, rpd: 14400, tpm: 5000, tpd: 500000 }
+      # Tier 3 — best quality, tighter daily caps
+      - id: llama-3.3-70b-versatile
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 30, rpd: 1000, tpm: 12000, tpd: 100000 }
+      - id: openai/gpt-oss-120b
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 30, rpd: 1000, tpm: 8000, tpd: 200000 }
+      - id: moonshotai/kimi-k2-instruct
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 60, rpd: 1000, tpm: 10000, tpd: 300000 }
     accounts:
       - api_key_env: "GROQ_API_KEY_1"
-        proxy: false
+        proxy: true
 
   # ──── Mistral AI ───────────────────────────────────────────────
   - name: mistral
     type: openai
     base_url: "https://api.mistral.ai/v1"
     daily_reset: "none"
+    limit_mode: both
+    account_limits: { rps: 1 }   # 1 req/sec global per API key across all models
     models:
+      - id: mistral-small-latest
+        tier: 1
+        context_window: 32768
+        limits: { rpm: 60, tpm: 375000 }
+      - id: mistral-medium-latest
+        tier: 2
+        context_window: 128000
+        limits: { rpm: 25, tpm: 375000 }
       - id: mistral-large-latest
         tier: 3
         context_window: 128000
-        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
-      - id: mistral-small-latest
-        tier: 2
-        context_window: 128000
-        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
-      - id: codestral-latest
-        tier: 2
-        context_window: 256000
-        limits: { rpm: 60, rps: 1, tokens_per_month: 1000000000 }
+        limits: { rpm: 60, tpm: 50000, tokens_per_month: 4000000 }
     accounts:
       - api_key_env: "MISTRAL_API_KEY_1"
         proxy: false
+      - api_key_env: "MISTRAL_API_KEY_2"
+        proxy: true
 
   # ──── Cerebras ─────────────────────────────────────────────────
   - name: cerebras
     type: openai
     base_url: "https://api.cerebras.ai/v1"
     daily_reset: "token_bucket"
+    limit_mode: per_account
     models:
-      - id: llama-3.3-70b
-        tier: 3
-        context_window: 131072
-        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
-      - id: llama-3.1-8b
+      - id: llama3.1-8b
         tier: 1
-        context_window: 131072
-        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
-      - id: gpt-oss-120b
+        context_window: 8192
+        limits: { rpm: 30, rph: 900, rpd: 14400, tpm: 60000, tpd: 1000000 }
+      - id: qwen-3-235b-a22b-instruct-2507
         tier: 3
-        context_window: 131072
-        limits: { rpm: 30, tpm: 60000, tpd: 1000000 }
+        context_window: 65536
+        limits: { rpm: 30, rph: 900, rpd: 14400, tpm: 30000, tpd: 1000000 }
     accounts:
       - api_key_env: "CEREBRAS_API_KEY_1"
-        proxy: false
+        proxy: true
 
   # ──── NVIDIA NIM ────────────────────────────────────────────────
   - name: nvidia
     type: openai
     base_url: "https://integrate.api.nvidia.com/v1"
     daily_reset: "none"
+    limit_mode: per_account
     models:
-      - id: meta/llama-3.3-70b-instruct
-        tier: 3
-        context_window: 131072
-        limits: { rpm: 40 }
-      - id: meta/llama-3.1-8b-instruct
+      # Tier 1 - Small / Fast
+      - id: meta/llama-4-scout-17b-16e-instruct
         tier: 1
         context_window: 131072
         limits: { rpm: 40 }
-      - id: nvidia/llama-3.1-nemotron-70b-instruct
+      - id: mistralai/mistral-small-3.1-24b-instruct-2503
+        tier: 1
+        context_window: 131072
+        limits: { rpm: 40 }
+        
+      # Tier 2 - Balanced / Mid
+      - id: google/gemma-3-27b-it
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: mistralai/mistral-medium-3-instruct
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: meta/llama-4-maverick-17b-128e-instruct
+        tier: 2
+        context_window: 131072
+        limits: { rpm: 40 }
+        
+      # Tier 3 - Large / Frontier
+      - id: moonshotai/kimi-k2-instruct-0905
+        tier: 3
+        context_window: 262144
+        limits: { rpm: 40 }
+      - id: stepfun-ai/step-3.5-flash
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: minimaxai/minimax-m2.7
+        tier: 3
+        context_window: 131072
+        limits: { rpm: 40 }
+      - id: mistralai/mistral-large-3-675b-instruct-2512
+        tier: 3
+        context_window: 262144
+        limits: { rpm: 40 }
+      - id: deepseek-ai/deepseek-v3.2
         tier: 3
         context_window: 131072
         limits: { rpm: 40 }
