@@ -2,7 +2,6 @@ package provider
 
 import (
 	"ai-gateway/logger"
-	"ai-gateway/proxy"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -35,16 +34,11 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 
 	url := account.BaseURL + "/chat/completions"
 
-	// Create HTTP client with optional proxy
-	client := &http.Client{Timeout: 60 * time.Second}
-	if account.ProxyInfo != nil {
-		proxiedClient, err := proxy.MakeHTTPClient(account.ProxyInfo, 60)
-		if err != nil {
-			logger.Warn().Err(err).Str("account", account.DisplayName()).Msg("Failed to create proxied client, using direct")
-		} else {
-			client = proxiedClient
-			client.Timeout = 60 * time.Second
-		}
+	// B3/I2: Reuse the pre-built HTTP client from the account
+	client := account.HTTPClient
+	if client == nil {
+		logger.Warn().Str("account", account.DisplayName()).Msg("No HTTPClient on account, using default")
+		client = http.DefaultClient
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
@@ -147,4 +141,3 @@ func parseIntHeader(h http.Header, key string) int {
 	}
 	return n
 }
-

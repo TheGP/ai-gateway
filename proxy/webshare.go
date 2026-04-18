@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,6 +20,7 @@ type WebshareProvider struct {
 	proxies    []webshareProxy
 	proxiesMux sync.RWMutex
 	lastFetch  time.Time
+	refreshing atomic.Bool // prevents duplicate concurrent fetches
 }
 
 type webshareProxyResponse struct {
@@ -113,13 +115,20 @@ func (w *WebshareProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
 		logger.Warn().Str("account", accountKey).Str("ip", savedIP).Msg("Saved proxy IP not found, assigning new one")
 	}
 
-	// Refresh if stale
+	// Refresh if stale, but prevent duplicate concurrent fetches
 	w.proxiesMux.RLock()
-	if time.Since(w.lastFetch) > 5*time.Minute {
-		w.proxiesMux.RUnlock()
-		go w.fetchProxies()
-	} else {
-		w.proxiesMux.RUnlock()
+	stale := time.Since(w.lastFetch) > 5*time.Minute
+	w.proxiesMux.RUnlock()
+
+	if stale && w.refreshing.CompareAndSwap(false, true) {
+		go func() {
+			defer w.refreshing.Store(false)
+			if err := w.fetchProxies(); err != nil {
+				logger.Warn().Err(err).Msg("Background proxy refresh failed")
+			} else {
+				logger.Debug().Msg("Background proxy refresh succeeded")
+			}
+		}()
 	}
 
 	// Find unused proxy
