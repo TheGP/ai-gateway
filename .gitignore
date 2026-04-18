@@ -2,3 +2,4 @@
 ip_mappings.json
 *.exe
 gateway_state.json
+providers.yaml

@@ -137,6 +137,7 @@ Live monitoring at `http://localhost:8080/dashboard` — prompts for your auth t
 Copy `.env.example` to `.env` and fill in your API keys:
 
 ```env
+GATEWAY_PORT=8080
 GATEWAY_AUTH_TOKEN=your-secret-token
 GATEWAY_REQUEST_TIMEOUT=60s
 
@@ -160,13 +161,24 @@ NVIDIA_API_KEY_1=nvapi-...
 
 Accounts with empty/missing keys are silently skipped. Providers with zero valid accounts are disabled.
 
-### 2. Run
+### 2. Providers config
+
+Copy `providers.yaml.example` to `providers.yaml` and edit to match your accounts and desired models:
+
+```bash
+cp providers.yaml.example providers.yaml
+```
+
+`providers.yaml` is git-ignored — your active config with real account counts and limits stays local.
+
+
+### 3. Run
 
 ```bash
 go run .
 ```
 
-### 3. CLI management
+### 4. CLI management
 
 The gateway binary doubles as a management CLI. The gateway must be running for these commands to work.
 
@@ -202,7 +214,7 @@ groq/GROQ_API_KEY_1      🟡 cooldown           18       1  240s
 > **Note:** Disabled state survives restarts — it's persisted to `gateway_state.json`.
 > Re-enable with `./ai-gateway enable <account>` or set `"disabled": false` in the JSON manually.
 
-### 4. Sync providers (optional)
+### 5. Sync providers (optional)
 
 Check which models each provider has added or removed since you last updated `providers.yaml`:
 
@@ -223,7 +235,7 @@ OPENROUTER_API_KEY=sk-or-...
 
 No files are modified — output is informational only. Update `providers.yaml` manually based on what you want to keep.
 
-### 5. Deployment (pm2)
+### 6. Deployment (pm2)
 
 A `deploy.sh` script is included for server deployments with [pm2](https://pm2.keymetrics.io/):
 
@@ -245,7 +257,7 @@ The script:
 4. `pm2 reload` if the process exists, otherwise `pm2 start`
 
 
-### 6. Configuration
+### 7. Configuration
 
 All provider config lives in `providers.yaml`. Structure:
 

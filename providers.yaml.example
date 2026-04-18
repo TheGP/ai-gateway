@@ -220,3 +220,42 @@ providers:
     accounts:
       - api_key_env: "NVIDIA_API_KEY_1"
         proxy: false
+
+  # ──── OpenRouter (free models) ──────────────────────────────────
+  # Free :free models: 20 RPM + 50 RPD (<$10 credits) or 1000 RPD (≥$10)
+  # Limits are shared across ALL :free models on the key → per_account mode.
+  - name: openrouter-free
+    type: openai
+    base_url: "https://openrouter.ai/api/v1"
+    daily_reset: "midnight_utc"
+    limit_mode: per_account
+    account_limits: { rpm: 20, rpd: 1000 }  # ≥$10 purchased → 1000 RPD on :free models
+    models:
+      - id: google/gemma-3-12b-it:free
+        tier: 1
+        context_window: 131072
+      - id: google/gemma-3-27b-it:free
+        tier: 2
+        context_window: 131072
+      - id: openai/gpt-oss-120b:free
+        tier: 3
+        context_window: 131072
+    accounts:
+      - api_key_env: "OPENROUTER_API_KEY"
+        proxy: false
+
+  # ──── OpenRouter (paid — last-resort only) ──────────────────────
+  # Tier 99 ensures this is only used after ALL free models fail.
+  - name: openrouter-paid
+    type: openai
+    base_url: "https://openrouter.ai/api/v1"
+    daily_reset: "none"
+    limit_mode: per_account
+    models:
+      - id: openai/gpt-oss-120b
+        tier: 99
+        context_window: 131072
+        # no limits — paid model, react to 429s as they come
+    accounts:
+      - api_key_env: "OPENROUTER_API_KEY"
+        proxy: false
