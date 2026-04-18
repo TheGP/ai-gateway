@@ -255,7 +255,7 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 					account.ProxyInfo = info
 				}
 			} else if acc.Proxy && proxyProvider != nil {
-				info, err := proxyProvider.GetProxy(acc.APIKeyEnv)
+				info, err := proxyProvider.GetProxy(acc.APIKeyEnv, p.Name)
 				if err != nil {
 					logger.Warn().Err(err).Str("account", account.DisplayName()).Msg("Failed to get proxy")
 				} else {

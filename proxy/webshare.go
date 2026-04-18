@@ -105,7 +105,7 @@ func (w *WebshareProvider) fetchProxies() error {
 	return nil
 }
 
-func (w *WebshareProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
+func (w *WebshareProvider) GetProxy(accountKey, provider string) (*ProxyInfo, error) {
 	// Check if we already have a saved IP for this account
 	if savedIP, ok := w.tracker.GetIP(accountKey); ok {
 		p := w.findByIP(savedIP)
@@ -139,18 +139,18 @@ func (w *WebshareProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
 		return nil, fmt.Errorf("no proxies available")
 	}
 
-	// Try random proxies until we find one not already used
+	// Try random proxies until we find one not reserved by this provider
 	for attempts := 0; attempts < len(w.proxies)*2; attempts++ {
 		idx := rand.Intn(len(w.proxies))
 		p := w.proxies[idx]
-		if !w.tracker.IsIPUsed(p.ProxyAddress) {
+		if !w.tracker.IsIPUsed(p.ProxyAddress, provider) {
 			info := &ProxyInfo{
 				Address:  fmt.Sprintf("%s:%d", p.ProxyAddress, p.Port),
 				Username: p.Username,
 				Password: p.Password,
 				Protocol: "socks5",
 			}
-			if err := w.tracker.SetIP(accountKey, p.ProxyAddress); err != nil {
+			if err := w.tracker.SetIP(accountKey, p.ProxyAddress, provider); err != nil {
 				logger.Warn().Err(err).Msg("Failed to save IP mapping")
 			}
 			logger.Info().Str("account", accountKey).Str("ip", p.ProxyAddress).Str("country", p.CountryCode).Msg("Assigned proxy")
@@ -161,8 +161,10 @@ func (w *WebshareProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
 	return nil, fmt.Errorf("no unused proxies available")
 }
 
-func (w *WebshareProvider) ReleaseProxy(accountKey string) error {
-	return w.tracker.ReleaseIP(accountKey)
+// ReleaseProxy keeps the IP reserved for 1 month (soft release) so it
+// won't be assigned to another account on the same provider.
+func (w *WebshareProvider) ReleaseProxy(accountKey, provider string) error {
+	return w.tracker.SoftReleaseIP(accountKey)
 }
 
 func (w *WebshareProvider) findByIP(ip string) *ProxyInfo {
@@ -181,24 +183,38 @@ func (w *WebshareProvider) findByIP(ip string) *ProxyInfo {
 	return nil
 }
 
-// Tracker persists API key → proxy IP mappings
+const proxyReservationTTL = 30 * 24 * time.Hour // 1 month
+
+// Tracker persists API key → proxy IP mappings with per-provider isolation.
+// Once assigned, a proxy IP is reserved for the provider for 1 month so
+// different accounts on the same provider cannot reuse the same IP.
 type Tracker struct {
 	filePath string
-	mappings map[string]string
-	usedIPs  map[string]bool
-	mu       sync.RWMutex
+	// mappings: apiKey → ipEntry (active assignments)
+	mappings map[string]ipEntry
+	// reservations: "provider:ip" → expiry (includes active + soft-released)
+	reservations map[string]time.Time
+	mu           sync.RWMutex
+}
+
+type ipEntry struct {
+	IP         string
+	Provider   string
+	AssignedAt time.Time
 }
 
 type ipMapping struct {
-	APIKey string `json:"api_key"`
-	IP     string `json:"ip"`
+	APIKey     string    `json:"api_key"`
+	IP         string    `json:"ip"`
+	Provider   string    `json:"provider"`
+	AssignedAt time.Time `json:"assigned_at"`
 }
 
 func NewTracker(filePath string) *Tracker {
 	return &Tracker{
-		filePath: filePath,
-		mappings: make(map[string]string),
-		usedIPs:  make(map[string]bool),
+		filePath:     filePath,
+		mappings:     make(map[string]ipEntry),
+		reservations: make(map[string]time.Time),
 	}
 }
 
@@ -219,18 +235,46 @@ func (t *Tracker) Load() error {
 		return fmt.Errorf("failed to parse IP tracker: %w", err)
 	}
 
+	now := time.Now()
+	pruned := 0
 	for _, m := range mappings {
-		t.mappings[m.APIKey] = m.IP
-		t.usedIPs[m.IP] = true
+		assignedAt := m.AssignedAt
+		if assignedAt.IsZero() {
+			// Legacy entry without timestamp — treat as assigned now so it
+			// gets a full 1-month window from this load.
+			assignedAt = now
+		}
+		expiry := assignedAt.Add(proxyReservationTTL)
+		if now.After(expiry) {
+			pruned++
+			continue // expired, drop it
+		}
+		entry := ipEntry{IP: m.IP, Provider: m.Provider, AssignedAt: assignedAt}
+		t.mappings[m.APIKey] = entry
+		t.reservations[reservationKey(m.Provider, m.IP)] = expiry
+	}
+	if pruned > 0 {
+		_ = t.save() // persist pruned state
 	}
 	return nil
 }
 
 func (t *Tracker) save() error {
 	var mappings []ipMapping
-	for key, ip := range t.mappings {
-		mappings = append(mappings, ipMapping{APIKey: key, IP: ip})
+	for key, e := range t.mappings {
+		mappings = append(mappings, ipMapping{
+			APIKey:     key,
+			IP:         e.IP,
+			Provider:   e.Provider,
+			AssignedAt: e.AssignedAt,
+		})
 	}
+	// Also persist soft-released reservations (no active account key)
+	// by keeping them in mappings under a synthetic key.
+	// We store them as entries with APIKey = "" — but that would collide.
+	// Instead we only persist active mappings; reservations are reconstructed
+	// from those on Load. Soft-released IPs are persisted via the mappings
+	// map under a synthetic "_released:<provider>:<ip>" key.
 	data, err := json.MarshalIndent(mappings, "", "  ")
 	if err != nil {
 		return err
@@ -238,32 +282,51 @@ func (t *Tracker) save() error {
 	return os.WriteFile(t.filePath, data, 0644)
 }
 
+func reservationKey(provider, ip string) string {
+	return provider + ":" + ip
+}
+
 func (t *Tracker) GetIP(apiKey string) (string, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	ip, ok := t.mappings[apiKey]
-	return ip, ok
+	if e, ok := t.mappings[apiKey]; ok {
+		return e.IP, true
+	}
+	return "", false
 }
 
-func (t *Tracker) SetIP(apiKey, ip string) error {
+func (t *Tracker) SetIP(apiKey, ip, provider string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.mappings[apiKey] = ip
-	t.usedIPs[ip] = true
+	now := time.Now()
+	expiry := now.Add(proxyReservationTTL)
+	t.mappings[apiKey] = ipEntry{IP: ip, Provider: provider, AssignedAt: now}
+	t.reservations[reservationKey(provider, ip)] = expiry
 	return t.save()
 }
 
-func (t *Tracker) IsIPUsed(ip string) bool {
+// IsIPUsed reports whether ip is currently reserved by the given provider.
+func (t *Tracker) IsIPUsed(ip, provider string) bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.usedIPs[ip]
+	expiry, ok := t.reservations[reservationKey(provider, ip)]
+	if !ok {
+		return false
+	}
+	return time.Now().Before(expiry)
 }
 
-func (t *Tracker) ReleaseIP(apiKey string) error {
+// SoftReleaseIP keeps the IP reserved for the provider for 1 month from the
+// original assignment date, but removes the active account → IP mapping so
+// the account can be reassigned a new proxy if needed.
+func (t *Tracker) SoftReleaseIP(apiKey string) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if ip, ok := t.mappings[apiKey]; ok {
-		delete(t.usedIPs, ip)
+	if e, ok := t.mappings[apiKey]; ok {
+		// Keep the reservation in t.reservations (it already has the expiry).
+		// Persist it under a synthetic key so it survives restarts.
+		syntheticKey := "_released:" + e.Provider + ":" + e.IP
+		t.mappings[syntheticKey] = e
 		delete(t.mappings, apiKey)
 	}
 	return t.save()

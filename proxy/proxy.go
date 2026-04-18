@@ -18,8 +18,8 @@ type ProxyInfo struct {
 // ProxyProvider is the interface for proxy implementations
 type ProxyProvider interface {
 	Init() error
-	GetProxy(accountKey string) (*ProxyInfo, error)
-	ReleaseProxy(accountKey string) error
+	GetProxy(accountKey, provider string) (*ProxyInfo, error)
+	ReleaseProxy(accountKey, provider string) error
 }
 
 // MakeHTTPClient creates an HTTP client that routes through the given proxy.

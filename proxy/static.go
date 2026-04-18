@@ -51,7 +51,7 @@ func (s *StaticProvider) Init() error {
 	return nil
 }
 
-func (s *StaticProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
+func (s *StaticProvider) GetProxy(accountKey, provider string) (*ProxyInfo, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -77,7 +77,7 @@ func (s *StaticProvider) GetProxy(accountKey string) (*ProxyInfo, error) {
 	return &p, nil
 }
 
-func (s *StaticProvider) ReleaseProxy(accountKey string) error {
+func (s *StaticProvider) ReleaseProxy(accountKey, provider string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.assignments, accountKey)
