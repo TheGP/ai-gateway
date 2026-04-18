@@ -35,6 +35,9 @@ type persistedUsage struct {
 	TotalErrors     int64     `json:"total_errors"`
 	Consecutive429s int       `json:"consecutive_429s"`
 
+	// persisted so dead keys aren't retried after restart
+	Disabled bool `json:"disabled,omitempty"`
+
 	// Per-model state (per_model / both modes)
 	ModelUsage map[string]persistedModelUsage `json:"model_usage,omitempty"`
 }
@@ -50,19 +53,11 @@ var FileMu sync.Mutex
 
 func accountKey(a *Account) string { return a.DisplayName() }
 
-// SaveState serialises account usage into the "accounts" section of path.
-func SaveState(accounts []*Account, path string) error {
-	FileMu.Lock()
-	defer FileMu.Unlock()
-
-	state := GatewayState{Accounts: make(map[string]persistedUsage, len(accounts))}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &state)
-	}
-	if state.Accounts == nil {
-		state.Accounts = make(map[string]persistedUsage, len(accounts))
-	}
-
+// SnapshotAccounts serialises account usage into a persistedUsage map.
+// It does NOT write to disk — the caller combines this with router state
+// and writes atomically.
+func SnapshotAccounts(accounts []*Account) map[string]persistedUsage {
+	result := make(map[string]persistedUsage, len(accounts))
 	for _, a := range accounts {
 		a.Usage.mu.Lock()
 		p := persistedUsage{
@@ -76,6 +71,7 @@ func SaveState(accounts []*Account, path string) error {
 			TotalTokens:     a.Usage.TotalTokens,
 			TotalErrors:     a.Usage.TotalErrors,
 			Consecutive429s: a.Usage.Consecutive429s,
+			Disabled:        a.IsDisabled(),
 		}
 		// Persist per-model state
 		if len(a.Usage.modelUsage) > 0 {
@@ -93,9 +89,20 @@ func SaveState(accounts []*Account, path string) error {
 			}
 		}
 		a.Usage.mu.Unlock()
-		state.Accounts[accountKey(a)] = p
+		result[accountKey(a)] = p
 	}
+	return result
+}
 
+// SaveFullState atomically writes both account and router state to path.
+func SaveFullState(accounts []*Account, routerJSON json.RawMessage, path string) error {
+	FileMu.Lock()
+	defer FileMu.Unlock()
+
+	state := GatewayState{
+		Accounts: SnapshotAccounts(accounts),
+		Router:   routerJSON,
+	}
 	return writeAtomic(path, state)
 }
 
@@ -134,9 +141,14 @@ func LoadState(accounts []*Account, path string) error {
 		a.Usage.Consecutive429s = s.Consecutive429s
 		a.Usage.mu.Unlock()
 
+		// restore disabled state
+		if s.Disabled {
+			a.SetDisabled(true)
+		}
+
 		// Restore per-model state
 		for id, pm := range s.ModelUsage {
-			m := newModelUsage()
+			m := newModelUsage(a.DailyReset)
 			m.dailyRequests = pm.DailyRequests
 			m.dailyTokens = pm.DailyTokens
 			m.dailyResetTime = pm.DailyResetTime

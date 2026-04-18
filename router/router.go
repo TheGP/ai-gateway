@@ -198,7 +198,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 
 	// Sort by LastUsed (oldest first = round-robin effect)
 	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].LastUsed.Before(candidates[j].LastUsed)
+		return candidates[i].GetLastUsed().Before(candidates[j].GetLastUsed())
 	})
 
 	var lastErr error
@@ -210,7 +210,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		}
 
 		// Skip accounts that have been permanently disabled (e.g. expired key)
-		if account.Disabled {
+		if account.IsDisabled() {
 			logger.Debug().Str("account", account.DisplayName()).Msg("Skipping disabled account")
 			continue
 		}
@@ -231,7 +231,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		}
 
 		// Send request
-		account.LastUsed = time.Now()
+		account.SetLastUsed(time.Now())
 		resp, err := r.sendToAccount(ctx, account, req)
 		if err == nil {
 			// Update counters with actual tokens
@@ -266,10 +266,10 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		// Handle permanently invalid/expired key — disable and alert
 		var invalidKeyErr *provider.InvalidKeyError
 		if errors.As(err, &invalidKeyErr) {
-			account.Disabled = true
+			account.SetDisabled(true)
 			logger.Error().Str("account", account.DisplayName()).Msg("API key invalid/expired — account disabled until restart")
 			r.addAlert("error", fmt.Sprintf("Dead API key: %s — disabled until restart", account.DisplayName()))
-			r.telegram.AlertInvalidKey(account.DisplayName())  
+			r.telegram.AlertInvalidKey(account.DisplayName())
 			lastErr = err
 			continue
 		}
@@ -494,15 +494,29 @@ func (r *Router) GetStats() Stats {
 		}
 
 		status := "ok"
+		if a.IsDisabled() {
+			status = "disabled"
+		}
 		usage := a.Usage.GetStats(a.LimitMode, a.Models)
-		if usage.CooldownSeconds > 0 {
+		if usage.CooldownSeconds > 0 && status == "ok" {
 			status = "cooldown"
 		}
 
-		// Use limits from first model as representative for account-level display
 		var limits config.ModelLimits
-		if len(a.Models) > 0 {
-			limits = a.Models[0].Limits
+		switch a.LimitMode {
+		case "per_account":
+			// For per_account mode, use AccountLimits if set, otherwise aggregate max across models
+			if (a.AccountLimits != config.ModelLimits{}) {
+				limits = a.AccountLimits
+			} else {
+				limits = maxModelLimits(a.Models)
+			}
+		case "both":
+			// Account-level bars use AccountLimits; per-model stats already in usage.ModelStats
+			limits = a.AccountLimits
+		default:
+			// per_model — account-level bars show max across all models as representative
+			limits = maxModelLimits(a.Models)
 		}
 
 		accountStats = append(accountStats, AccountStat{
@@ -532,6 +546,18 @@ func (r *Router) GetStats() Stats {
 	}
 }
 
+// SetAccountDisabled enables or disables an account by its display key (provider/env).
+// Returns false if no account with that key exists.
+func (r *Router) SetAccountDisabled(key string, disabled bool) bool {
+	for _, a := range r.accounts {
+		if a.DisplayName() == key {
+			a.SetDisabled(disabled)
+			return true
+		}
+	}
+	return false
+}
+
 // GetAlerts returns pending alerts to send via Telegram
 func (r *Router) GetPendingAlerts() []AlertLog {
 	r.mu.Lock()
@@ -553,3 +579,35 @@ func formatDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dm", mins)
 }
+
+// maxModelLimits returns a ModelLimits with the max of each field across all models.
+// Used to show representative account-level limits on the dashboard when there's
+// no explicit AccountLimits configured.
+func maxModelLimits(models []config.ModelConfig) config.ModelLimits {
+	var m config.ModelLimits
+	for _, mc := range models {
+		if mc.Limits.RPM > m.RPM {
+			m.RPM = mc.Limits.RPM
+		}
+		if mc.Limits.RPH > m.RPH {
+			m.RPH = mc.Limits.RPH
+		}
+		if mc.Limits.RPD > m.RPD {
+			m.RPD = mc.Limits.RPD
+		}
+		if mc.Limits.RPS > m.RPS {
+			m.RPS = mc.Limits.RPS
+		}
+		if mc.Limits.TPM > m.TPM {
+			m.TPM = mc.Limits.TPM
+		}
+		if mc.Limits.TPD > m.TPD {
+			m.TPD = mc.Limits.TPD
+		}
+		if mc.Limits.TokensPerMonth > m.TokensPerMonth {
+			m.TokensPerMonth = mc.Limits.TokensPerMonth
+		}
+	}
+	return m
+}
+

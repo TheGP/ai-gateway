@@ -2,6 +2,7 @@ package router
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"ai-gateway/logger"
@@ -16,12 +17,9 @@ type persistedRouter struct {
 	RecentRequests []RequestLog `json:"recent_requests"`
 }
 
-// SaveRouterState merges the router's live counters into the shared state file,
-// preserving the "accounts" section written by provider.SaveState.
-func (r *Router) SaveRouterState(path string) error {
-	provider.FileMu.Lock()
-	defer provider.FileMu.Unlock()
-
+// SnapshotRouter returns the router's live counters as JSON.
+// Used by SaveFullState to combine with account state.
+func (r *Router) SnapshotRouter() (json.RawMessage, error) {
 	r.mu.Lock()
 	snap := persistedRouter{
 		TotalRequests:  r.totalRequests,
@@ -31,27 +29,21 @@ func (r *Router) SaveRouterState(path string) error {
 	}
 	r.mu.Unlock()
 
-	snapBytes, err := json.Marshal(snap)
+	data, err := json.Marshal(snap)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return json.RawMessage(data), nil
+}
 
-	// Read existing envelope so we don't clobber the accounts section
-	state := provider.GatewayState{}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &state)
-	}
-	state.Router = json.RawMessage(snapBytes)
-
-	data, err := json.MarshalIndent(state, "", "  ")
+// SaveFullState atomically writes both account and router state.
+// Replaces the old separate SaveState + SaveRouterState calls.
+func (r *Router) SaveFullState(path string, accounts []*provider.Account) error {
+	routerJSON, err := r.SnapshotRouter()
 	if err != nil {
-		return err
+		return fmt.Errorf("snapshot router: %w", err)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return provider.SaveFullState(accounts, routerJSON, path)
 }
 
 // LoadRouterState restores total counters and the recent request log from disk.
