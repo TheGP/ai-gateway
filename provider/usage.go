@@ -30,15 +30,19 @@ type ModelUsage struct {
 	monthlyTokens  int64
 	monthResetTime time.Time
 
+	// dailyResetMode controls which midnight function to use
+	dailyResetMode string
+
 	mu sync.Mutex
 }
 
-func newModelUsage() *ModelUsage {
+func newModelUsage(dailyReset string) *ModelUsage {
 	now := time.Now()
 	return &ModelUsage{
-		dailyResetTime:    nextMidnightUTC(now),
+		dailyResetTime: nextReset(now, dailyReset),
 		minuteWindowStart: now,
 		monthResetTime:    nextMonthStart(now),
+		dailyResetMode:    dailyReset,
 	}
 }
 
@@ -53,7 +57,7 @@ func (m *ModelUsage) canAccept(estimatedTokens int, limits config.ModelLimits) b
 	if now.After(m.dailyResetTime) {
 		m.dailyRequests = 0
 		m.dailyTokens = 0
-		m.dailyResetTime = nextMidnightUTC(now)
+		m.dailyResetTime = nextReset(now, m.dailyResetMode)
 	}
 
 	// Auto-reset minute window
@@ -70,7 +74,14 @@ func (m *ModelUsage) canAccept(estimatedTokens int, limits config.ModelLimits) b
 
 	// RPM check
 	if limits.RPM > 0 {
-		if modelRequestsInWindow(m.requestTimes, now, time.Minute) >= limits.RPM {
+		if countInWindow(m.requestTimes, now, time.Minute) >= limits.RPM {
+			return false
+		}
+	}
+
+	// RPH check
+	if limits.RPH > 0 {
+		if countInWindow(m.requestTimes, now, time.Hour) >= limits.RPH {
 			return false
 		}
 	}
@@ -125,6 +136,9 @@ func (m *ModelUsage) record(promptTokens, completionTokens int) {
 	}
 	m.tokensThisMinute += total
 	m.monthlyTokens += int64(total)
+
+	// Trim old entries (B1 fix) — keep entries within the last hour (covers both RPM and RPH windows)
+	m.requestTimes = trimOlderThan(m.requestTimes, now, time.Hour)
 }
 
 // capacityPercent returns highest usage % across RPM/RPD/TPD for dashboard display.
@@ -136,7 +150,7 @@ func (m *ModelUsage) capacityPercent(limits config.ModelLimits) float64 {
 	max := 0.0
 
 	if limits.RPM > 0 {
-		pct := float64(modelRequestsInWindow(m.requestTimes, now, time.Minute)) / float64(limits.RPM) * 100
+		pct := float64(countInWindow(m.requestTimes, now, time.Minute)) / float64(limits.RPM) * 100
 		if pct > max {
 			max = pct
 		}
@@ -161,12 +175,14 @@ func (m *ModelUsage) getStats(limits config.ModelLimits) ModelUsageStats {
 	defer m.mu.Unlock()
 	now := time.Now()
 	return ModelUsageStats{
-		RPMUsed:      modelRequestsInWindow(m.requestTimes, now, time.Minute),
+		RPMUsed:      countInWindow(m.requestTimes, now, time.Minute),
+		RPHUsed:      countInWindow(m.requestTimes, now, time.Hour),
 		RPDUsed:      m.dailyRequests,
 		TPMUsed:      m.tokensThisMinute,
 		TPDUsed:      m.dailyTokens,
 		MonthlyUsed:  m.monthlyTokens,
 		RPMLimit:     limits.RPM,
+		RPHLimit:     limits.RPH,
 		RPDLimit:     limits.RPD,
 		TPMLimit:     limits.TPM,
 		TPDLimit:     limits.TPD,
@@ -177,11 +193,13 @@ func (m *ModelUsage) getStats(limits config.ModelLimits) ModelUsageStats {
 // ModelUsageStats is the dashboard-visible snapshot for a single model.
 type ModelUsageStats struct {
 	RPMUsed      int   `json:"rpm_used"`
+	RPHUsed      int   `json:"rph_used"`
 	RPDUsed      int   `json:"rpd_used"`
 	TPMUsed      int   `json:"tpm_used"`
 	TPDUsed      int   `json:"tpd_used"`
 	MonthlyUsed  int64 `json:"monthly_used"`
 	RPMLimit     int   `json:"rpm_limit"`
+	RPHLimit     int   `json:"rph_limit"`
 	RPDLimit     int   `json:"rpd_limit"`
 	TPMLimit     int   `json:"tpm_limit"`
 	TPDLimit     int   `json:"tpd_limit"`
@@ -216,16 +234,20 @@ type AccountUsage struct {
 	TotalErrors     int64
 	Consecutive429s int
 
+	// dailyResetMode controls which midnight function to use
+	dailyResetMode string
+
 	mu sync.Mutex
 }
 
-func NewAccountUsage() *AccountUsage {
+func NewAccountUsage(dailyReset string) *AccountUsage {
 	now := time.Now()
 	return &AccountUsage{
 		modelUsage:        make(map[string]*ModelUsage),
-		dailyResetTime:    nextMidnightUTC(now),
+		dailyResetTime:    nextReset(now, dailyReset),
 		minuteWindowStart: now,
 		monthResetTime:    nextMonthStart(now),
+		dailyResetMode:    dailyReset,
 	}
 }
 
@@ -235,7 +257,7 @@ func (u *AccountUsage) forModel(modelID string) *ModelUsage {
 	u.mu.Lock()
 	m, ok := u.modelUsage[modelID]
 	if !ok {
-		m = newModelUsage()
+		m = newModelUsage(u.dailyResetMode)
 		u.modelUsage[modelID] = m
 	}
 	u.mu.Unlock()
@@ -277,7 +299,7 @@ func (u *AccountUsage) CanAccept(estimatedTokens int, limits config.ModelLimits,
 		if now.After(u.dailyResetTime) {
 			u.dailyRequests = 0
 			u.dailyTokens = 0
-			u.dailyResetTime = nextMidnightUTC(now)
+			u.dailyResetTime = nextReset(now, u.dailyResetMode)
 		}
 		// Auto-reset minute window
 		if now.Sub(u.minuteWindowStart) >= time.Minute {
@@ -290,7 +312,11 @@ func (u *AccountUsage) CanAccept(estimatedTokens int, limits config.ModelLimits,
 			u.monthResetTime = nextMonthStart(now)
 		}
 
-		if checkLimits.RPM > 0 && requestsInWindow(u.requestTimes, now, time.Minute) >= checkLimits.RPM {
+		if checkLimits.RPM > 0 && countInWindow(u.requestTimes, now, time.Minute) >= checkLimits.RPM {
+			u.mu.Unlock()
+			return false
+		}
+		if checkLimits.RPH > 0 && countInWindow(u.requestTimes, now, time.Hour) >= checkLimits.RPH {
 			u.mu.Unlock()
 			return false
 		}
@@ -349,6 +375,8 @@ func (u *AccountUsage) RecordRequest(promptTokens, completionTokens int, modelID
 		}
 		u.tokensThisMinute += total
 		u.monthlyTokens += int64(total)
+		// Trim old entries (B1 fix) — keep entries within the last hour
+		u.requestTimes = trimOlderThan(u.requestTimes, now, time.Hour)
 		u.mu.Unlock()
 	}
 
@@ -420,7 +448,7 @@ func (u *AccountUsage) CapacityPercent(limits config.ModelLimits, modelID, limit
 	now := time.Now()
 	max := 0.0
 	if limits.RPM > 0 {
-		pct := float64(requestsInWindow(u.requestTimes, now, time.Minute)) / float64(limits.RPM) * 100
+		pct := float64(countInWindow(u.requestTimes, now, time.Minute)) / float64(limits.RPM) * 100
 		if pct > max {
 			max = pct
 		}
@@ -462,8 +490,9 @@ func (u *AccountUsage) GetStats(limitMode string, modelLimits []config.ModelConf
 	if cooldown < 0 {
 		cooldown = 0
 	}
+
 	stats := UsageStats{
-		RPMUsed:         requestsInWindow(u.requestTimes, now, time.Minute),
+		RPMUsed:         countInWindow(u.requestTimes, now, time.Minute),
 		RPDUsed:         u.dailyRequests,
 		TPMUsed:         u.tokensThisMinute,
 		TPDUsed:         u.dailyTokens,
@@ -474,22 +503,45 @@ func (u *AccountUsage) GetStats(limitMode string, modelLimits []config.ModelConf
 		Consecutive429s: u.Consecutive429s,
 		CooldownSeconds: int(cooldown.Seconds()),
 	}
+
+	// C1 fix: snapshot model keys while holding the lock to avoid TOCTOU
+	var modelKeys []struct {
+		id     string
+		usage  *ModelUsage
+	}
+	if limitMode == "per_model" || limitMode == "both" {
+		modelKeys = make([]struct {
+			id    string
+			usage *ModelUsage
+		}, 0, len(u.modelUsage))
+		for id, m := range u.modelUsage {
+			modelKeys = append(modelKeys, struct {
+				id    string
+				usage *ModelUsage
+			}{id, m})
+		}
+	}
 	u.mu.Unlock()
 
 	// Attach per-model stats for per_model and both modes.
 	// Always include every configured model — defaults to all-zero if no requests yet.
 	if limitMode == "per_model" || limitMode == "both" {
 		stats.ModelStats = make(map[string]ModelUsageStats, len(modelLimits))
+
+		// Build lookup from snapshotted model usage
+		modelUsageLookup := make(map[string]*ModelUsage, len(modelKeys))
+		for _, mk := range modelKeys {
+			modelUsageLookup[mk.id] = mk.usage
+		}
+
 		for _, mc := range modelLimits {
-			u.mu.Lock()
-			m, ok := u.modelUsage[mc.ID]
-			u.mu.Unlock()
-			if ok {
+			if m, ok := modelUsageLookup[mc.ID]; ok {
 				stats.ModelStats[mc.ID] = m.getStats(mc.Limits)
 			} else {
 				// No requests yet — emit zero stats with limits so the dashboard can render bars
 				stats.ModelStats[mc.ID] = ModelUsageStats{
 					RPMLimit:     mc.Limits.RPM,
+					RPHLimit:     mc.Limits.RPH,
 					RPDLimit:     mc.Limits.RPD,
 					TPMLimit:     mc.Limits.TPM,
 					TPDLimit:     mc.Limits.TPD,
@@ -504,37 +556,61 @@ func (u *AccountUsage) GetStats(limitMode string, modelLimits []config.ModelConf
 
 // ─── helpers ───────────────────────────────────────────────────────────────
 
-func requestsInWindow(times []time.Time, now time.Time, window time.Duration) int {
+// countInWindow counts entries in times that are after now-window.
+// Pure read-only — does not mutate the slice. (B2 fix)
+func countInWindow(times []time.Time, now time.Time, window time.Duration) int {
 	cutoff := now.Add(-window)
 	count := 0
-	newTimes := make([]time.Time, 0, len(times))
 	for _, t := range times {
 		if t.After(cutoff) {
 			count++
-			newTimes = append(newTimes, t)
 		}
 	}
-	// Note: we don't mutate the slice here since caller may not hold the right lock.
-	// Trimming happens in RecordRequest instead.
 	return count
 }
 
-// modelRequestsInWindow is the same but operates on a ModelUsage slice (caller holds m.mu).
-func modelRequestsInWindow(times []time.Time, now time.Time, window time.Duration) int {
+// trimOlderThan returns a new slice keeping only entries within the window.
+// Called from RecordRequest which holds the appropriate lock. (B1 fix)
+func trimOlderThan(times []time.Time, now time.Time, window time.Duration) []time.Time {
 	cutoff := now.Add(-window)
-	count := 0
-	newTimes := times[:0]
-	for _, t := range times {
-		if t.After(cutoff) {
-			count++
-			newTimes = append(newTimes, t)
-		}
+	// Find first entry that's within the window (times are chronologically ordered)
+	start := 0
+	for start < len(times) && !times[start].After(cutoff) {
+		start++
 	}
-	return count
+	if start == 0 {
+		return times
+	}
+	// Compact: shift valid entries to front
+	n := copy(times, times[start:])
+	return times[:n]
 }
 
 func nextMidnightUTC(now time.Time) time.Time {
 	return time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
+// nextMidnightPacific returns midnight Pacific time. Google's free tier
+// resets at Pacific midnight, which is 07:00 or 08:00 UTC depending on DST.
+func nextMidnightPacific(now time.Time) time.Time {
+	pacific, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		// Fallback to fixed -8 offset if tzdata is missing
+		pacific = time.FixedZone("PST", -8*60*60)
+	}
+	nowPac := now.In(pacific)
+	midnight := time.Date(nowPac.Year(), nowPac.Month(), nowPac.Day()+1, 0, 0, 0, 0, pacific)
+	return midnight
+}
+
+// nextReset picks the correct next-reset time based on the daily_reset config value.
+func nextReset(now time.Time, dailyReset string) time.Time {
+	switch dailyReset {
+	case "midnight_pacific":
+		return nextMidnightPacific(now)
+	default:
+		return nextMidnightUTC(now)
+	}
 }
 
 func nextMonthStart(now time.Time) time.Time {

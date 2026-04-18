@@ -75,6 +75,7 @@ type ModelConfig struct {
 
 type ModelLimits struct {
 	RPM            int   `yaml:"rpm" json:"rpm"`
+	RPH            int   `yaml:"rph" json:"rph"`
 	RPD            int   `yaml:"rpd" json:"rpd"`
 	RPS            int   `yaml:"rps" json:"rps"`
 	TPM            int   `yaml:"tpm" json:"tpm"`

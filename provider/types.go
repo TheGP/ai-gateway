@@ -4,7 +4,8 @@ import (
 	"ai-gateway/config"
 	"ai-gateway/proxy"
 	"fmt"
-	"sync"
+	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,12 +23,31 @@ type Account struct {
 	LimitMode     string             // "per_model" | "per_account" | "both"
 	AccountLimits config.ModelLimits // shared limits used in "both" mode
 
-	ProxyInfo *proxy.ProxyInfo
-	Usage     *AccountUsage
-	Disabled  bool // set true when the API key is permanently invalid
-	LastUsed  time.Time
-	mu        sync.Mutex
+	ProxyInfo  *proxy.ProxyInfo
+	Usage      *AccountUsage
+	HTTPClient *http.Client // reused across requests; created at startup
+
+	disabled atomic.Bool  // set true when the API key is permanently invalid
+	lastUsed atomic.Int64 // UnixNano of last use for round-robin sorting
 }
+
+// IsDisabled returns true when the API key has been permanently disabled.
+func (a *Account) IsDisabled() bool { return a.disabled.Load() }
+
+// SetDisabled marks the account as permanently disabled (or re-enables it).
+func (a *Account) SetDisabled(v bool) { a.disabled.Store(v) }
+
+// GetLastUsed returns the time this account was last used.
+func (a *Account) GetLastUsed() time.Time {
+	n := a.lastUsed.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// SetLastUsed records when this account was last used.
+func (a *Account) SetLastUsed(t time.Time) { a.lastUsed.Store(t.UnixNano()) }
 
 // SupportsModel checks if this account can serve the given model
 func (a *Account) SupportsModel(modelID string) bool {
