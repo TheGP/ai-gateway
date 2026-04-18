@@ -305,7 +305,7 @@ Models in `providers.yaml` are assigned a numeric `tier` (typically 1 to 3) whic
 
 ### Proxy isolation
 
-Accounts with `proxy: true` get routed through a dedicated Webshare SOCKS5 proxy. Each API key gets a sticky proxy IP (tracked in `ip_mappings.json`). This prevents rate-limit sharing across keys that would otherwise resolve to the same IP.
+Accounts with `proxy: true` get routed through a dedicated [Webshare](https://www.webshare.io/?referral_code=r5ah58acc1n1) SOCKS5 proxy. Each API key gets a sticky proxy IP (tracked in `ip_mappings.json`). This prevents rate-limit sharing across keys that would otherwise resolve to the same IP.
 
 ---
 
