@@ -25,7 +25,30 @@ AFTER_HASH=$(git rev-parse HEAD)
 
 if [ "$BEFORE_HASH" = "$AFTER_HASH" ]; then
     echo "✅ No changes detected."
-    pm2 status "$PM2_APP_NAME" 2>/dev/null || true
+    if ! command -v pm2 &> /dev/null; then
+        echo "⚠️  pm2 not found — skipping process check."
+        exit 0
+    fi
+    if pm2 describe "$PM2_APP_NAME" > /dev/null 2>&1; then
+        STATUS=$(pm2 jlist 2>/dev/null | python3 -c "import sys,json; procs=json.load(sys.stdin); p=[x for x in procs if x['name']=='$PM2_APP_NAME']; print(p[0]['pm2_env']['status'] if p else 'unknown')" 2>/dev/null || echo "unknown")
+        if [ "$STATUS" = "online" ]; then
+            echo "✅ $PM2_APP_NAME is already running."
+        else
+            echo "⚠️  $PM2_APP_NAME is not running (status: $STATUS) — restarting..."
+            pm2 restart "$PM2_APP_NAME"
+            echo "✅ Restarted"
+        fi
+    else
+        echo "⚠️  $PM2_APP_NAME not in pm2 — starting..."
+        if [ ! -f "$SCRIPT_DIR/$BINARY_NAME" ]; then
+            echo "Binary not found — building first..."
+            go build -o "$BINARY_NAME" .
+        fi
+        pm2 start "./$BINARY_NAME" --name "$PM2_APP_NAME"
+        pm2 save
+        echo "✅ Started"
+    fi
+    pm2 status
     exit 0
 fi
 
