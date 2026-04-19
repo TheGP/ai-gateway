@@ -41,7 +41,7 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 		"temperature":     0.7,
 		"maxOutputTokens": 8192,
 	}
-	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
+	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" && !strings.HasPrefix(req.Model, "gemma") {
 		genConfig["responseMimeType"] = "application/json"
 	}
 
