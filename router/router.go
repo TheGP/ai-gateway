@@ -212,13 +212,13 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 
 		// Skip accounts that have been permanently disabled (e.g. expired key)
 		if account.IsDisabled() {
-			logger.Debug().Str("account", account.DisplayName()).Msg("Skipping disabled account")
+			logger.Info().Str("account", account.DisplayName()).Msg("Skipping disabled account")
 			continue
 		}
 
 		// Skip accounts whose provider is in a 503 cooldown for this model
 		if until, ok := r.getModelUnavailable(account.ProviderName, req.Model); ok {
-			logger.Debug().Str("provider", account.ProviderName).Str("model", req.Model).
+			logger.Info().Str("provider", account.ProviderName).Str("model", req.Model).
 				Dur("remaining", time.Until(until)).Msg("Skipping: provider in 503 cooldown for this model")
 			continue
 		}
@@ -227,7 +227,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 
 		// Proactive check (per-model and/or per-account depending on limit mode)
 		if !account.Usage.CanAccept(estimatedTokens, limits, account.AccountLimits, req.Model, account.LimitMode) {
-			logger.Debug().Str("account", account.DisplayName()).Str("model", req.Model).Str("limit_mode", account.LimitMode).Msg("Skipping: proactive limit check failed")
+			logger.Info().Str("account", account.DisplayName()).Str("model", req.Model).Str("limit_mode", account.LimitMode).Msg("Skipping: proactive limit check failed")
 			continue
 		}
 
