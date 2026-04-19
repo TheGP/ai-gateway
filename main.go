@@ -286,6 +286,9 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 }
 
 func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Router, cfg *config.Config, telegram *alerts.TelegramAlerter) {
+	start := time.Now()
+	logger.Info().Str("remote", req.RemoteAddr).Msg("Incoming request")
+
 	var chatReq provider.ChatRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 10<<20)).Decode(&chatReq); err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -316,10 +319,12 @@ func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Ro
 	ctx, cancel := context.WithTimeout(req.Context(), 3*cfg.Gateway.RequestTimeout)
 	defer cancel()
 
+	logger.Info().Str("model", chatReq.Model).Msg("Routing request")
 	resp, err := r.Route(ctx, chatReq)
 	if err != nil {
 		// Client disconnected — don't alert Telegram, just close quietly.
 		if errors.Is(err, context.Canceled) {
+			logger.Warn().Str("model", chatReq.Model).Dur("duration", time.Since(start)).Msg("Client disconnected before response")
 			return
 		}
 
@@ -353,6 +358,7 @@ func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Ro
 		return
 	}
 
+	logger.Info().Str("model", chatReq.Model).Dur("duration", time.Since(start)).Msg("Request completed successfully")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
 }
