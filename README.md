@@ -85,6 +85,7 @@ Combining both gives you full control over the fallback chain with no surprises:
 | `x_provider` | string | Force a specific provider; disables all fallback |
 | `x_fallback_models` | string[] | Ordered list of models to try if primary fails |
 | `x_no_fallback` | bool | Skip automatic tier fallback (explicit list still applies) |
+| `response_format` | object | `{"type": "json_object"}` — enforces JSON output; translated to `responseMimeType` for Gemini models, passed through for OpenAI-compatible providers |
 
 
 

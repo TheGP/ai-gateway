@@ -26,6 +26,9 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 	if req.MaxTokens != nil {
 		body["max_tokens"] = *req.MaxTokens
 	}
+	if req.ResponseFormat != nil {
+		body["response_format"] = req.ResponseFormat
+	}
 
 	jsonBody, err := json.Marshal(body)
 	if err != nil {

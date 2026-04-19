@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -241,6 +242,11 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			capacity := account.Usage.CapacityPercent(limits, req.Model, account.LimitMode)
 			if capacity > 80 {
 				r.addAlert("warning", fmt.Sprintf("Capacity >80%% on %s/%s (%.0f%%)", account.DisplayName(), req.Model, capacity))
+			}
+
+			// Strip markdown fences when JSON was requested and model wrapped its output
+			if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" && len(resp.Choices) > 0 {
+				resp.Choices[0].Message.Content = sanitizeJSONContent(resp.Choices[0].Message.Content)
 			}
 
 			return resp, account, nil
@@ -611,3 +617,19 @@ func maxModelLimits(models []config.ModelConfig) config.ModelLimits {
 	return m
 }
 
+// sanitizeJSONContent strips markdown code fences from a model response only
+// when the content clearly starts with one (i.e. the model wrapped its JSON in
+// ```json ... ``` despite being asked not to). Bare JSON is returned as-is.
+func sanitizeJSONContent(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if !strings.HasPrefix(trimmed, "```") {
+		return s // already clean — don't touch it
+	}
+	// Strip opening fence line (```json or ``` or ```anything)
+	if idx := strings.Index(trimmed, "\n"); idx != -1 {
+		trimmed = trimmed[idx+1:]
+	}
+	// Strip closing fence
+	trimmed = strings.TrimSuffix(strings.TrimSpace(trimmed), "```")
+	return strings.TrimSpace(trimmed)
+}

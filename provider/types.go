@@ -126,13 +126,19 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+// ResponseFormat mirrors the OpenAI response_format object.
+type ResponseFormat struct {
+	Type string `json:"type"` // "text" | "json_object"
+}
+
 // ChatRequest is the OpenAI-compatible request format
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature *float64  `json:"temperature,omitempty"`
-	MaxTokens   *int      `json:"max_tokens,omitempty"`
-	XProvider   string    `json:"x_provider,omitempty"`
+	Model          string          `json:"model"`
+	Messages       []Message       `json:"messages"`
+	Temperature    *float64        `json:"temperature,omitempty"`
+	MaxTokens      *int            `json:"max_tokens,omitempty"`
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+	XProvider      string          `json:"x_provider,omitempty"`
 
 	// XFallbackModels is an explicit ordered list of models to try if the
 	// primary model fails. Tried before (and instead of) automatic tier fallback.

@@ -37,12 +37,17 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 	}
 
 	// Build request body
+	genConfig := map[string]interface{}{
+		"temperature":     0.7,
+		"maxOutputTokens": 8192,
+	}
+	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" {
+		genConfig["responseMimeType"] = "application/json"
+	}
+
 	body := map[string]interface{}{
-		"contents": contents,
-		"generationConfig": map[string]interface{}{
-			"temperature":     0.7,
-			"maxOutputTokens": 8192,
-		},
+		"contents":         contents,
+		"generationConfig": genConfig,
 	}
 
 	// Add system instruction if present
@@ -55,10 +60,10 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 	}
 
 	if req.Temperature != nil {
-		body["generationConfig"].(map[string]interface{})["temperature"] = *req.Temperature
+		genConfig["temperature"] = *req.Temperature
 	}
 	if req.MaxTokens != nil {
-		body["generationConfig"].(map[string]interface{})["maxOutputTokens"] = *req.MaxTokens
+		genConfig["maxOutputTokens"] = *req.MaxTokens
 	}
 
 	jsonBody, err := json.Marshal(body)
