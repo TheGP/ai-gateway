@@ -180,10 +180,11 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Gateway.Port)
 	server := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 3*cfg.Gateway.RequestTimeout + 10*time.Second,
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		WriteTimeout:      3*cfg.Gateway.RequestTimeout + 10*time.Second,
 	}
 
 	// Graceful shutdown
