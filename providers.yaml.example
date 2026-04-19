@@ -44,7 +44,7 @@ providers:
     limit_mode: per_model
     models:
       # Tier 1
-      - id: gemini-3.1-flash-lite
+      - id: gemini-3.1-flash-lite-preview
         tier: 1
         context_window: 1048576
         limits: { rpm: 15, rpd: 500, tpm: 250000 }
@@ -64,7 +64,7 @@ providers:
         limits: { rpm: 15, rpd: 1500 }
         
       # Tier 3
-      - id: gemini-3-flash
+      - id: gemini-3-flash-preview
         tier: 3
         context_window: 1048576
         limits: { rpm: 5, rpd: 20, tpm: 250000 }
