@@ -41,6 +41,8 @@ func GeminiSend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 		"temperature":     0.7,
 		"maxOutputTokens": 8192,
 	}
+	// Note: Gemma models (gemma-3-*) do not support responseMimeType and return
+	// 400 INVALID_ARGUMENT if it's set. Only apply JSON mode for Gemini models.
 	if req.ResponseFormat != nil && req.ResponseFormat.Type == "json_object" && !strings.HasPrefix(req.Model, "gemma") {
 		genConfig["responseMimeType"] = "application/json"
 	}

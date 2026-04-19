@@ -183,7 +183,7 @@ func main() {
 		Addr:         addr,
 		Handler:      mux,
 		ReadTimeout:  5 * time.Second,
-		WriteTimeout: cfg.Gateway.RequestTimeout + 5*time.Second,
+		WriteTimeout: 3*cfg.Gateway.RequestTimeout + 10*time.Second,
 	}
 
 	// Graceful shutdown
@@ -263,15 +263,17 @@ func buildAccounts(cfg *config.Config, proxyProvider proxy.ProxyProvider) []*pro
 				}
 			}
 
-			// Create HTTP client once per account at startup
-			httpClient := &http.Client{Timeout: 60 * time.Second}
+			// Create HTTP client once per account at startup.
+			// Timeout is set above the per-attempt context timeout (90s default)
+			// so the context is the effective limiter, not the HTTP client.
+			httpClient := &http.Client{Timeout: 120 * time.Second}
 			if account.ProxyInfo != nil {
-				proxiedClient, err := proxy.MakeHTTPClient(account.ProxyInfo, 60)
+				proxiedClient, err := proxy.MakeHTTPClient(account.ProxyInfo, 120)
 				if err != nil {
 					logger.Warn().Err(err).Str("account", account.DisplayName()).Msg("Failed to create proxied client, using direct")
 				} else {
 					httpClient = proxiedClient
-					httpClient.Timeout = 60 * time.Second
+					httpClient.Timeout = 120 * time.Second
 				}
 			}
 			account.HTTPClient = httpClient
@@ -309,14 +311,30 @@ func handleChatCompletion(w http.ResponseWriter, req *http.Request, r *router.Ro
 		return
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(req.Context(), cfg.Gateway.RequestTimeout)
+	// Backstop context — individual upstream calls each get their own
+	// requestTimeout via sendToAccount; this is just a safety net.
+	ctx, cancel := context.WithTimeout(req.Context(), 3*cfg.Gateway.RequestTimeout)
 	defer cancel()
 
 	resp, err := r.Route(ctx, chatReq)
 	if err != nil {
 		// Client disconnected — don't alert Telegram, just close quietly.
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+
+		// Gateway's own timeout — log it and return a proper error so the
+		// client doesn't hang waiting for a response that will never come.
+		if errors.Is(err, context.DeadlineExceeded) {
+			logger.Warn().Str("model", chatReq.Model).Dur("timeout", cfg.Gateway.RequestTimeout).Msg("Request timed out (all upstream providers too slow)")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusGatewayTimeout)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]string{
+					"message": fmt.Sprintf("gateway timeout: all providers for %q took too long", chatReq.Model),
+					"type":    "timeout",
+				},
+			})
 			return
 		}
 

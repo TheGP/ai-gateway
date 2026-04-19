@@ -17,6 +17,18 @@ import (
 // modelUnavailableCooldown is how long a provider is skipped after returning 503.
 const modelUnavailableCooldown = 2 * time.Minute
 
+// attemptTimeoutError wraps a per-attempt deadline so the retry loop can
+// distinguish "this one upstream was slow" from "the whole request expired".
+// Intentionally does NOT implement Unwrap so errors.Is(_, DeadlineExceeded)
+// won't match — only errors.As will.
+type attemptTimeoutError struct {
+	account string
+}
+
+func (e *attemptTimeoutError) Error() string {
+	return fmt.Sprintf("attempt timeout for %s", e.account)
+}
+
 // Router handles intelligent request routing across accounts
 type Router struct {
 	accounts       []*provider.Account
@@ -252,7 +264,15 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 			return resp, account, nil
 		}
 
-		// Client disconnected mid-flight — abort silently, don't count as an error.
+		// Per-attempt timeout — this upstream was too slow; try the next account.
+		var attemptTimeout *attemptTimeoutError
+		if errors.As(err, &attemptTimeout) {
+			logger.Warn().Str("account", account.DisplayName()).Str("model", req.Model).Dur("timeout", r.requestTimeout).Msg("Attempt timed out, trying next account")
+			lastErr = err
+			continue
+		}
+
+		// Client disconnected or backstop expired — stop immediately.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, nil, err
 		}
@@ -323,15 +343,41 @@ func (r *Router) getModelUnavailable(providerName, modelID string) (time.Time, b
 	return until, true
 }
 
-func (r *Router) sendToAccount(ctx context.Context, account *provider.Account, req provider.ChatRequest) (*provider.ChatResponse, error) {
+func (r *Router) sendToAccount(parentCtx context.Context, account *provider.Account, req provider.ChatRequest) (*provider.ChatResponse, error) {
+	// Per-attempt timeout: each upstream call gets the full request timeout,
+	// independent of how much time earlier attempts consumed.
+	ctx, cancel := context.WithTimeout(context.Background(), r.requestTimeout)
+	defer cancel()
+
+	// Forward parent cancellation (client disconnect) to this attempt.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			cancel()
+		case <-done:
+		}
+	}()
+
+	var resp *provider.ChatResponse
+	var err error
+
 	switch account.ProviderType {
 	case "gemini":
-		return provider.GeminiSend(ctx, account, req)
+		resp, err = provider.GeminiSend(ctx, account, req)
 	case "openai":
-		return provider.OpenAISend(ctx, account, req)
+		resp, err = provider.OpenAISend(ctx, account, req)
 	default:
 		return nil, fmt.Errorf("unknown provider type: %s", account.ProviderType)
 	}
+
+	// If the per-attempt deadline fired but the parent (backstop) is still
+	// alive, wrap the error so tryModel can continue to the next account.
+	if err != nil && errors.Is(err, context.DeadlineExceeded) && parentCtx.Err() == nil {
+		return nil, &attemptTimeoutError{account: account.DisplayName()}
+	}
+	return resp, err
 }
 
 func (r *Router) getAccountsForModel(modelID string) []*provider.Account {
