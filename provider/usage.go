@@ -288,11 +288,11 @@ func (u *AccountUsage) CanAccept(estimatedTokens int, limits config.ModelLimits,
 
 	// Check shared account-level counters for "per_account" and "both" modes
 	if limitMode == "per_account" || limitMode == "both" {
-		// Which limits to use: for "per_account" the model limits ARE the account limits;
-		// for "both" we use the explicit accountLimits (e.g. rps: 1 for Mistral)
-		checkLimits := limits
-		if limitMode == "both" {
-			checkLimits = accountLimits
+		// per_account: prefer explicit accountLimits, fall back to per-model limits.
+		// both: always use accountLimits (e.g. rps: 1 for Mistral).
+		checkLimits := accountLimits
+		if limitMode == "per_account" && (accountLimits == config.ModelLimits{}) {
+			checkLimits = limits
 		}
 
 		// Auto-reset daily
