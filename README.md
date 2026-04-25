@@ -179,7 +179,23 @@ cp providers.yaml.example providers.yaml
 go run .
 ```
 
-### 4. CLI management
+### 4. Run tests
+
+Standard shells (`bash`, `zsh`, `cmd`, PowerShell):
+
+```bash
+go test ./...
+```
+
+Nushell:
+
+```nu
+go test './...'
+```
+
+Use quotes in Nushell because unquoted `...` is expanded as a parent-path expression.
+
+### 5. CLI management
 
 The gateway binary doubles as a management CLI. The gateway must be running for these commands to work.
 
@@ -215,7 +231,7 @@ groq/GROQ_API_KEY_1      🟡 cooldown           18       1  240s
 > **Note:** Disabled state survives restarts — it's persisted to `gateway_state.json`.
 > Re-enable with `./ai-gateway enable <account>` or set `"disabled": false` in the JSON manually.
 
-### 5. Sync providers (optional)
+### 6. Sync providers (optional)
 
 Check which models each provider has added or removed since you last updated `providers.yaml`:
 

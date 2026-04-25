@@ -29,11 +29,14 @@ func (e *attemptTimeoutError) Error() string {
 	return fmt.Sprintf("attempt timeout for %s", e.account)
 }
 
+type sendFunc func(context.Context, *provider.Account, provider.ChatRequest) (*provider.ChatResponse, error)
+
 // Router handles intelligent request routing across accounts
 type Router struct {
 	accounts       []*provider.Account
 	cfg            *config.Config
 	telegram       *alerts.TelegramAlerter
+	send           sendFunc
 	requestTimeout time.Duration
 	retryDelay     time.Duration
 
@@ -71,7 +74,7 @@ type AlertLog struct {
 }
 
 func New(accounts []*provider.Account, cfg *config.Config, telegram *alerts.TelegramAlerter) *Router {
-	return &Router{
+	r := &Router{
 		accounts:              accounts,
 		cfg:                   cfg,
 		telegram:              telegram,
@@ -80,6 +83,8 @@ func New(accounts []*provider.Account, cfg *config.Config, telegram *alerts.Tele
 		startTime:             time.Now(),
 		modelUnavailableUntil: make(map[string]time.Time),
 	}
+	r.send = r.sendToAccount
+	return r
 }
 
 // Route handles the full routing logic with alias resolution, proactive checking,
@@ -256,7 +261,7 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 
 		// Send request
 		account.SetLastUsed(time.Now())
-		resp, err := r.sendToAccount(ctx, account, req)
+		resp, err := r.send(ctx, account, req)
 		if err == nil {
 			// Update counters with actual tokens
 			account.Usage.RecordRequest(resp.Usage.PromptTokens, resp.Usage.CompletionTokens, req.Model, account.LimitMode)
