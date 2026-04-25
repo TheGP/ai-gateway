@@ -319,14 +319,14 @@ func (r *Router) tryModel(ctx context.Context, req provider.ChatRequest, estimat
 		// Handle 429
 		var rateLimitErr *provider.RateLimitError
 		if errors.As(err, &rateLimitErr) {
-			account.Usage.Record429(rateLimitErr.RetryAfter)
+			account.Usage.Record429(rateLimitErr.RetryAfter, req.Model)
 			logger.Warn().Str("account", account.DisplayName()).Str("model", req.Model).Dur("cooldown", rateLimitErr.RetryAfter).Msg("Rate limited (429)")
 
 			if account.Usage.GetStats(account.LimitMode, account.Models).Consecutive429s >= 5 {
 				r.addAlert("warning", fmt.Sprintf("Consecutive 429s on %s (%d)", account.DisplayName(), account.Usage.GetStats(account.LimitMode, account.Models).Consecutive429s))
 			}
 		} else {
-			account.Usage.RecordError()
+			account.Usage.RecordError(req.Model, err.Error())
 			logger.Warn().Err(err).Str("account", account.DisplayName()).Str("model", req.Model).Msg("Request failed")
 		}
 

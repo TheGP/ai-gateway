@@ -34,6 +34,7 @@ type persistedUsage struct {
 	TotalTokens     int64     `json:"total_tokens"`
 	TotalErrors     int64     `json:"total_errors"`
 	Consecutive429s int       `json:"consecutive_429s"`
+	RecentErrors    []RecentError `json:"recent_errors,omitempty"`
 
 	// persisted so dead keys aren't retried after restart
 	Disabled bool `json:"disabled,omitempty"`
@@ -71,6 +72,7 @@ func SnapshotAccounts(accounts []*Account) map[string]persistedUsage {
 			TotalTokens:     a.Usage.TotalTokens,
 			TotalErrors:     a.Usage.TotalErrors,
 			Consecutive429s: a.Usage.Consecutive429s,
+			RecentErrors:    append([]RecentError(nil), a.Usage.recentErrors...),
 			Disabled:        a.IsDisabled(),
 		}
 		// Persist per-model state
@@ -139,6 +141,7 @@ func LoadState(accounts []*Account, path string) error {
 		a.Usage.TotalTokens = s.TotalTokens
 		a.Usage.TotalErrors = s.TotalErrors
 		a.Usage.Consecutive429s = s.Consecutive429s
+		a.Usage.recentErrors = s.RecentErrors
 		a.Usage.mu.Unlock()
 
 		// restore disabled state

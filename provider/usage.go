@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+const maxRecentErrors = 10
+
+// RecentError stores a single error event for dashboard display.
+type RecentError struct {
+	Time    time.Time `json:"time"`
+	Message string    `json:"message"`
+	Model   string    `json:"model,omitempty"`
+	Code    int       `json:"code,omitempty"` // e.g. 429, 503
+}
+
 // ─── ModelUsage ────────────────────────────────────────────────────────────
 // Tracks rate-limit counters for a single model ID independently.
 // Used by "per_model" and "both" limit modes.
@@ -233,6 +243,7 @@ type AccountUsage struct {
 	TotalTokens     int64
 	TotalErrors     int64
 	Consecutive429s int
+	recentErrors    []RecentError
 
 	// dailyResetMode controls which midnight function to use
 	dailyResetMode string
@@ -395,19 +406,29 @@ func (u *AccountUsage) RecordRequest(promptTokens, completionTokens int, modelID
 }
 
 // RecordError records a non-429 error.
-func (u *AccountUsage) RecordError() {
+func (u *AccountUsage) RecordError(model, errMsg string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.TotalErrors++
+	u.pushError(RecentError{Time: time.Now(), Message: errMsg, Model: model})
 }
 
 // Record429 records a 429 and sets a cooldown on the whole account.
-func (u *AccountUsage) Record429(cooldown time.Duration) {
+func (u *AccountUsage) Record429(cooldown time.Duration, model string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	u.Consecutive429s++
 	u.TotalErrors++
 	u.cooldownUntil = time.Now().Add(cooldown)
+	u.pushError(RecentError{Time: time.Now(), Message: "rate limited (429)", Model: model, Code: 429})
+}
+
+// pushError appends an error and trims to maxRecentErrors. Caller must hold u.mu.
+func (u *AccountUsage) pushError(e RecentError) {
+	u.recentErrors = append(u.recentErrors, e)
+	if len(u.recentErrors) > maxRecentErrors {
+		u.recentErrors = u.recentErrors[len(u.recentErrors)-maxRecentErrors:]
+	}
 }
 
 // SetCooldown sets a reactive cooldown.
@@ -481,6 +502,7 @@ type UsageStats struct {
 	Consecutive429s int                        `json:"consecutive_429s"`
 	CooldownSeconds int                        `json:"cooldown_remaining_s"`
 	ModelStats      map[string]ModelUsageStats `json:"model_stats,omitempty"`
+	RecentErrors    []RecentError              `json:"recent_errors,omitempty"`
 }
 
 func (u *AccountUsage) GetStats(limitMode string, modelLimits []config.ModelConfig) UsageStats {
@@ -502,6 +524,7 @@ func (u *AccountUsage) GetStats(limitMode string, modelLimits []config.ModelConf
 		TotalErrors:     u.TotalErrors,
 		Consecutive429s: u.Consecutive429s,
 		CooldownSeconds: int(cooldown.Seconds()),
+		RecentErrors:    append([]RecentError(nil), u.recentErrors...),
 	}
 
 	// C1 fix: snapshot model keys while holding the lock to avoid TOCTOU

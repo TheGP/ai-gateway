@@ -199,6 +199,15 @@ tr.model-row.hidden{display:none}
 .mono{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.8rem}
 .expand-icon{color:#555;font-size:.7rem;margin-left:6px;transition:transform .2s;display:inline-block}
 .expand-icon.open{transform:rotate(90deg)}
+.err-link{cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px}
+.err-link:hover{color:#fca5a5}
+tr.error-row td{padding:6px 12px 6px 24px;background:#1a1010;border-bottom:1px solid #2a1a1a}
+tr.error-row.hidden{display:none}
+.error-list{font-size:.8rem;color:#ccc}
+.error-list .err-entry{padding:3px 0;border-bottom:1px solid #221a1a;display:flex;gap:10px}
+.error-list .err-time{color:#666;white-space:nowrap;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.75rem}
+.error-list .err-model{color:#a78bfa;min-width:80px}
+.error-list .err-msg{color:#f87171;word-break:break-word}
 </style>
 </head>
 <body>
@@ -212,6 +221,9 @@ tr.model-row.hidden{display:none}
 <div class="section"><h2>Alerts</h2><div id="alerts"></div></div>
 <script>
 const expanded=new Set();
+const errExpanded=new Set();
+
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
 function bar(used,limit){
   if(!limit)return '<span style="color:#555">—</span>';
@@ -242,6 +254,23 @@ function toggle(key){
   if(expanded.has(key))expanded.delete(key);
   else expanded.add(key);
   refresh();
+}
+function toggleErr(key,ev){
+  ev.stopPropagation();
+  if(errExpanded.has(key))errExpanded.delete(key);
+  else errExpanded.add(key);
+  refresh();
+}
+
+function errorRows(errors,key){
+  if(!errors||!errors.length)return '<div style="color:#666;padding:6px">No recent errors</div>';
+  return '<div class="error-list">'+errors.slice().reverse().map(e=>{
+    const t=new Date(e.time).toLocaleTimeString([],{hour12:false});
+    return '<div class="err-entry"><span class="err-time">'+t+'</span>'+
+      (e.model?'<span class="err-model">'+esc(e.model.split('/').pop())+'</span>':'')+
+      (e.code?'<span class="badge error" style="font-size:.7rem;padding:1px 5px">'+e.code+'</span>':'')+
+      '<span class="err-msg">'+esc(e.message)+'</span></div>';
+  }).join('')+'</div>';
 }
 
 async function refresh(){
@@ -274,8 +303,16 @@ d.accounts.forEach(a=>{
     '<td>'+bar(a.usage.rpd_used,a.limits.rpd)+'</td>'+
     '<td>'+bar(a.usage.tpd_used,a.limits.tpd)+'</td>'+
     '<td>'+a.usage.total_requests+'</td>'+
-    '<td>'+a.usage.total_errors+'</td>'+
+    '<td>'+(a.usage.total_errors>0?'<span class="err-link" onclick="toggleErr(\''+key+'\',event)">'+a.usage.total_errors+'</span>':a.usage.total_errors)+'</td>'+
   '</tr>');
+
+  // Error details row (toggle independently from model cards)
+  if(a.usage.total_errors>0){
+    const errOpen=errExpanded.has(key);
+    rows.push('<tr class="error-row'+(errOpen?'':' hidden')+'"><td colspan="8">'+
+      errorRows(a.usage.recent_errors,key)+
+    '</td></tr>');
+  }
 
   if(hasModels){
     rows.push('<tr class="model-row'+(isOpen?'':' hidden')+'"><td colspan="8">'+
