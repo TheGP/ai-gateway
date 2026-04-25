@@ -83,7 +83,7 @@ providers:
     type: openai
     base_url: "https://api.groq.com/openai/v1"
     daily_reset: "midnight_utc"
-    limit_mode: per_account
+    limit_mode: per_model
     models:
       # Tier 1 — high RPD, lower quality
       - id: llama-3.1-8b-instant
