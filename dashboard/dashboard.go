@@ -244,6 +244,7 @@ function modelCards(modelStats,models){
         '<div class="model-metric"><div class="label">RPM</div><div class="nums">'+bar(s.rpm_used,s.rpm_limit)+'</div></div>'+
         (s.tpm_limit?'<div class="model-metric"><div class="label">TPM</div><div class="nums">'+bar(s.tpm_used,s.tpm_limit)+'</div></div>':'')+
         (s.rpd_limit?'<div class="model-metric"><div class="label">RPD</div><div class="nums">'+bar(s.rpd_used,s.rpd_limit)+'</div></div>':'')+
+        (s.tpd_limit?'<div class="model-metric"><div class="label">TPD</div><div class="nums">'+bar(s.tpd_used,s.tpd_limit)+'</div></div>':'')+
         (s.monthly_limit?'<div class="model-metric"><div class="label">Monthly</div><div class="nums">'+bar(s.monthly_used,s.monthly_limit)+'</div></div>':'')+
       '</div>'+
     '</div>';
