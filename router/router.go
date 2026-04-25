@@ -105,13 +105,17 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 	// Skip all fallback when provider is forced (user wants that specific provider)
 	if req.XProvider == "" {
 		// Helper to attempt one fallback model and return true on success.
-		tryFallback := func(fallbackModel string) (bool, error) {
+		// When forceProvider is non-empty, only accounts from that provider are tried.
+		tryFallback := func(fallbackModel, forceProvider string) (bool, error) {
 			if ctx.Err() != nil {
 				return false, ctx.Err()
 			}
 			fallbackReq := req
 			fallbackReq.Model = fallbackModel
-			logger.Debug().Str("original", req.Model).Str("trying", fallbackModel).Msg("Fallback attempt")
+			if forceProvider != "" {
+				fallbackReq.XProvider = forceProvider
+			}
+			logger.Debug().Str("original", req.Model).Str("trying", fallbackModel).Str("provider", forceProvider).Msg("Fallback attempt")
 			resp, account, err = r.tryModel(ctx, fallbackReq, estimatedTokens)
 			if err == nil {
 				logger.Info().Str("original", req.Model).Str("fallback", fallbackModel).Str("provider", account.ProviderName).Msg("Tier fallback succeeded")
@@ -127,7 +131,7 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 
 		// 4a. Explicit fallback list (x_fallback_models) — tried first, in order.
 		for _, fallbackModel := range req.XFallbackModels {
-			ok, ctxErr := tryFallback(fallbackModel)
+			ok, ctxErr := tryFallback(fallbackModel, "")
 			if ctxErr != nil {
 				return nil, ctxErr
 			}
@@ -137,22 +141,30 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 		}
 
 		// 4b. Automatic tier fallback — only when x_no_fallback is not set.
+		// Candidates are (model, provider, tier) tuples sorted by tier so that
+		// a paid provider carrying the same model at a higher tier is only
+		// reached after all cheaper candidates are exhausted.
 		if !req.XNoFallback {
 			_, modelCfg := r.cfg.FindModelProvider(req.Model)
 			if modelCfg != nil {
-				// Build tier candidates, excluding models already tried explicitly.
 				explicit := make(map[string]bool, len(req.XFallbackModels)+1)
 				explicit[req.Model] = true
 				for _, m := range req.XFallbackModels {
 					explicit[m] = true
 				}
-				tierCandidates := r.getModelsAtOrAboveTier(modelCfg.Tier, req.Model)
-				logger.Debug().Str("model", req.Model).Strs("candidates", tierCandidates).Msg("Tier fallback: trying candidates")
-				for _, fallbackModel := range tierCandidates {
-					if explicit[fallbackModel] {
-						continue // already tried
+				tierCandidates := r.getTierFallbackCandidates(modelCfg.Tier, req.Model)
+				if len(tierCandidates) > 0 {
+					names := make([]string, len(tierCandidates))
+					for i, c := range tierCandidates {
+						names[i] = fmt.Sprintf("%s@%s(t%d)", c.model, c.provider, c.tier)
 					}
-					ok, ctxErr := tryFallback(fallbackModel)
+					logger.Debug().Str("model", req.Model).Strs("candidates", names).Msg("Tier fallback: trying candidates")
+				}
+				for _, candidate := range tierCandidates {
+					if explicit[candidate.model] {
+						continue
+					}
+					ok, ctxErr := tryFallback(candidate.model, candidate.provider)
 					if ctxErr != nil {
 						return nil, ctxErr
 					}
@@ -171,7 +183,6 @@ func (r *Router) Route(ctx context.Context, req provider.ChatRequest) (*provider
 	select {
 	case <-time.After(r.retryDelay):
 	case <-ctx.Done():
-		// Client disconnected — don't record as a gateway failure
 		return nil, ctx.Err()
 	}
 
@@ -401,22 +412,30 @@ func (r *Router) getAccountsForModelAndProvider(modelID, providerName string) []
 	return result
 }
 
-func (r *Router) getModelsAtOrAboveTier(minTier int, excludeModel string) []string {
-	type modelInfo struct {
-		id   string
-		tier int
-	}
-	var candidates []modelInfo
+// tierCandidate represents a model on a specific provider for automatic fallback.
+type tierCandidate struct {
+	model    string
+	provider string
+	tier     int
+}
 
-	seen := make(map[string]bool)
+// getTierFallbackCandidates returns (model, provider) pairs at or above minTier,
+// sorted by tier ascending. The same model ID on different providers at different
+// tiers produces separate entries so high-tier (paid) providers are tried last.
+func (r *Router) getTierFallbackCandidates(minTier int, excludeModel string) []tierCandidate {
+	var candidates []tierCandidate
+
+	type key struct{ model, provider string }
+	seen := make(map[key]bool)
 	for _, p := range r.cfg.Providers {
 		if len(p.Accounts) == 0 {
 			continue
 		}
 		for _, m := range p.Models {
-			if m.ID != excludeModel && m.Tier >= minTier && !seen[m.ID] {
-				candidates = append(candidates, modelInfo{id: m.ID, tier: m.Tier})
-				seen[m.ID] = true
+			k := key{m.ID, p.Name}
+			if m.ID != excludeModel && m.Tier >= minTier && !seen[k] {
+				candidates = append(candidates, tierCandidate{model: m.ID, provider: p.Name, tier: m.Tier})
+				seen[k] = true
 			}
 		}
 	}
@@ -426,11 +445,7 @@ func (r *Router) getModelsAtOrAboveTier(minTier int, excludeModel string) []stri
 		return candidates[i].tier < candidates[j].tier
 	})
 
-	result := make([]string, 0, len(candidates))
-	for _, c := range candidates {
-		result = append(result, c.id)
-	}
-	return result
+	return candidates
 }
 
 func (r *Router) attachGatewayMeta(resp *provider.ChatResponse, originalModel, actualModel string, account *provider.Account, isFallback bool) *provider.ChatResponse {
