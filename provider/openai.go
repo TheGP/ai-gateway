@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,7 +27,7 @@ func OpenAISend(ctx context.Context, account *Account, req ChatRequest) (*ChatRe
 	if req.MaxTokens != nil {
 		body["max_tokens"] = *req.MaxTokens
 	}
-	if req.ResponseFormat != nil {
+	if req.ResponseFormat != nil && !strings.Contains(req.Model, "gemma") {
 		body["response_format"] = req.ResponseFormat
 	}
 
